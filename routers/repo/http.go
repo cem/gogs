@@ -79,59 +79,20 @@ func Http(ctx *middleware.Context) {
 		askAuth      = !isPublicPull || setting.Service.RequireSignInView
 		authUser     *models.User
 		authUsername string
-		authPasswd   string
 	)
 
 	// check access
 	if askAuth {
-		baHead := ctx.Req.Header.Get("Authorization")
-		if baHead == "" {
+		authUsername := ctx.Req.Header.Get("X-Sandstorm-User-Id")
+		if authUsername == "" {
 			authRequired(ctx)
 			return
 		}
 
-		auths := strings.Fields(baHead)
-		// currently check basic auth
-		// TODO: support digit auth
-		// FIXME: middlewares/context.go did basic auth check already,
-		// maybe could use that one.
-		if len(auths) != 2 || auths[0] != "Basic" {
-			ctx.HandleText(401, "no basic auth and digit auth")
-			return
-		}
-		authUsername, authPasswd, err = base.BasicAuthDecode(auths[1])
+		authUser, err = models.GetUserByName(authUsername)
 		if err != nil {
-			ctx.HandleText(401, "no basic auth and digit auth")
+			ctx.Handle(500, "UserSignIn error: %v", err)
 			return
-		}
-
-		authUser, err = models.UserSignIn(authUsername, authPasswd)
-		if err != nil {
-			if !models.IsErrUserNotExist(err) {
-				ctx.Handle(500, "UserSignIn error: %v", err)
-				return
-			}
-
-			// Assume username now is a token.
-			token, err := models.GetAccessTokenBySHA(authUsername)
-			if err != nil {
-				if models.IsErrAccessTokenNotExist(err) {
-					ctx.HandleText(401, "invalid token")
-				} else {
-					ctx.Handle(500, "GetAccessTokenBySha", err)
-				}
-				return
-			}
-			token.Updated = time.Now()
-			if err = models.UpdateAccessToekn(token); err != nil {
-				ctx.Handle(500, "UpdateAccessToekn", err)
-			}
-			authUser, err = models.GetUserByID(token.UID)
-			if err != nil {
-				ctx.Handle(500, "GetUserById", err)
-				return
-			}
-			authUsername = authUser.Name
 		}
 
 		if !isPublicPull {
