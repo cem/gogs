@@ -18,30 +18,9 @@
                 </a>
                 <div id="repo-header-download-drop" class="drop-down">
                     <div id="repo-clone" class="clear">
-                        <p>Run the following commands to clone this repository:<p>
-                        <script>
-(function () {
-    window.addEventListener("message", function (event) {
-        document.querySelector("iframe#clone-iframe").setAttribute("src", event.data.uri);
-    });
-    var username = "me";
-    var repoPath = "{{$.RepoRelPath}}";
-    var repoName = repoPath.split("/")[1];
-    var template =
-        "echo url=" + window.location.protocol + "//" + username + ":$API_TOKEN@$API_HOST/ |" +
-        "git -c credential.helper=store credential approve\n" +
-        "git clone -c credential.helper=store " + window.location.protocol + "//" + username + "@$API_HOST/" + repoPath + ".git " + repoName + "\n";
-    window.parent.postMessage({renderTemplate: {rpcId: "0", template: template}}, "*");
-})();
-                        </script>
-                        <style>
-iframe#clone-iframe {
-    border: 1px solid silver;
-    padding: 3px;
-    width: 100%;"
-}
-                        </style>
-                        <iframe id="clone-iframe"></iframe>
+                        <p>Run the following commands to clone this repository:</p>
+                        {{template "repo/offer_template" $.RepoRelPath}}
+                        <iframe class="offer-template offer-save offer-clone"></iframe>
                         <div class="text-center" id="repo-clone-zip">
                             <a class="btn btn-green btn-radius" href="{{$.RepoLink}}/archive/{{EscapePound $.BranchName}}.zip"><i class="octicon octicon-file-zip"></i>ZIP</a>
                             <a class="btn btn-green btn-radius" href="{{$.RepoLink}}/archive/{{EscapePound $.BranchName}}.tar.gz"><i class="octicon octicon-file-zip"></i>TAR.GZ</a>

@@ -19,33 +19,18 @@
                     <strong>{{.i18n.Tr "repo.quick_guide"}}</strong>
                 </div>
                 <div class="panel-content">
+                    {{template "repo/offer_template" $.RepoRelPath}}
                     <div id="repo-clone" class="clear text-center">
-                        <h2>{{.i18n.Tr "repo.clone_this_repo"}}</h2>
-                        {{if not $.DisableSSH}}
-                        <button class="btn btn-blue btn-first current left btn-left-radius" id="repo-clone-ssh" data-link="{{.CloneLink.SSH}}">SSH</button>
-                        {{end}}
-                        <button class="btn {{if $.DisableSSH}}btn-first btn-blue current{{else}}btn-gray{{end}} left" id="repo-clone-https" data-link="{{.CloneLink.HTTPS}}">HTTPS</button>
-                        <input id="repo-clone-url" type="text" class="ipt ipt-disabled left" value="{{if $.DisableSSH}}{{$.CloneLink.HTTPS}}{{else}}{{$.CloneLink.SSH}}{{end}}" onclick="this.select()" readonly />
-                        <button class="btn btn-black left btn-right-radius" id="repo-clone-copy" data-copy-val="val" data-copy-from="#repo-clone-url">{{.i18n.Tr "repo.copy_link"}}</button>
-                        <p class="text-center" id="repo-clone-help">{{.i18n.Tr "repo.clone_helper" "http://git-scm.com/book/en/Git-Basics-Getting-a-Git-Repository" | Str2html}}</p>
-                        <hr/>
+                        <h2>First, add an authorization key to git:</h2>
+                        <iframe class="offer-template offer-save"></iframe>
                     </div>
                     <div id="repo-bare-cmd" class="text-center">
-                        <h2>{{.i18n.Tr "repo.create_new_repo_command"}}</h2>
-                        <pre class="text-left radius"><code>touch README.md
-git init
-git add README.md
-git commit -m "first commit"
-git remote add origin <span class="clone-url">{{if $.DisableSSH}}{{$.CloneLink.HTTPS}}{{else}}{{$.CloneLink.SSH}}{{end}}</span>
-git push -u origin master</code></pre>
-                        <br/>
-                        <hr/>
+                        <h2>...then, you can clone this empty repository:</h2>
+                        <iframe class="offer-template offer-clone"></iframe>
                     </div>
                     <div id="repo-bare-remote" class="text-center">
-                        <h2>{{.i18n.Tr "repo.push_exist_repo"}}</h2>
-                        <pre class="text-left radius"><code>git remote add origin <span class="clone-url">{{if $.DisableSSH}}{{$.CloneLink.HTTPS}}{{else}}{{$.CloneLink.SSH}}{{end}}</span>
-git push -u origin master</code></pre>
-                        <br/>
+                        <h2>...or add as a remote to an existing repository on your computer:</h2>
+                        <iframe class="offer-template offer-remote"></iframe>
                     </div>
                 </div>
             </div>

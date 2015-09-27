@@ -1,0 +1,53 @@
+<script>
+jQuery(function () {
+var username = "";
+
+window.addEventListener("message", function (event) {
+    document.getElementById(event.data.rpcId).src = event.data.uri;
+});
+
+function renderTemplate(id, save, clone, remote) {
+    while (username.length < 5) {
+        var rnd = Math.floor(Math.random()*36);
+        username += String.fromCharCode(rnd < 10 ? rnd + 48 : rnd + 87);
+    }
+
+    var repoPath = "{{.}}";
+    var repoName = repoPath.split("/")[1];
+    var saveTemplate =
+        "echo url=" + window.location.protocol + "//" + username + ":$API_TOKEN@$API_HOST/ | " +
+        "git -c credential.helper=store credential approve\n";
+    var cloneTemplate =
+        "git clone -c credential.helper=store " + window.location.protocol + "//" + username + "@$API_HOST/" + repoPath + ".git " + repoName + "\n";
+    var remoteTemplate =
+        "git config credential.helper store\n" +
+        "git remote add origin " + window.location.protocol + "//" + username + "@$API_HOST/" + repoPath + ".git\n";
+
+    var template = "";
+    if (save)
+        template += saveTemplate;
+    if (clone)
+        template += cloneTemplate;
+    if (remote)
+        template += remoteTemplate;
+
+    window.parent.postMessage({renderTemplate: {rpcId: id, template: template}}, "*");
+}
+
+var els = document.querySelectorAll("iframe.offer-template");
+for (var i = 0; i < els.length; ++i) {
+    var el = els[i];
+    el.id = "offer" + i;
+    renderTemplate(el.id, el.classList.contains("offer-save"), el.classList.contains("offer-clone"), el.classList.contains("offer-remote"));
+}
+});
+
+</script>
+
+<style>
+iframe.offer-template {
+    border: 1px solid silver;
+    padding: 3px;
+    width: 100%;"
+}
+</style>
