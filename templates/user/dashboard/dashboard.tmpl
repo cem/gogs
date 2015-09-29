@@ -5,6 +5,12 @@
     <div id="dashboard" class="container">
         {{template "ng/base/alert" .}}
         <div id="dashboard-news" class="left grid-2-3">
+            {{if .HasNoRepo}}
+            <div class="news clear">
+                <span class="text-bold">You don't have any repositories. Use this button to create one:</span>
+                <a class="btn" type="button" href="/repo/create"><i class="octicon octicon-repo-create"></i>New Repository</a>
+            </div>
+            {{end}}
             {{template "user/dashboard/feeds" .}}
         </div>
         <div class="right grid-1-3" id="dashboard-sidebar">

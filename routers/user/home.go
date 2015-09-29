@@ -87,6 +87,7 @@ func Dashboard(ctx *middleware.Context) {
 		return
 	}
 	ctx.Data["Repos"] = repos
+	ctx.Data["HasNoRepo"] = len(repos) == 0
 
 	// Get mirror repositories.
 	mirrors := make([]*models.Repository, 0, len(repos)/2)
