@@ -105,6 +105,11 @@ func SignedInUser(ctx *macaron.Context, sess session.Store) (*models.User, bool)
 							return string(rune('0' + rand.Intn(10)))
 						}
 
+						password := ""
+						for i := 0; i < 16; i++ {
+							password += randomDigit()
+						}
+
 						handle := ctx.Req.Header.Get("X-Sandstorm-Preferred-Handle")
 						if len(handle) == 0 {
 							handle = "gogsuser"
@@ -115,7 +120,7 @@ func SignedInUser(ctx *macaron.Context, sess session.Store) (*models.User, bool)
 								SandstormId: webAuthUser,
 								Name:        handle + suffix,
 								Email:       uuid.NewV4().String() + "@localhost",
-								Passwd:      webAuthUser,
+								Passwd:      password,
 								IsActive:    true,
 							}
 							err = models.CreateUser(u)
