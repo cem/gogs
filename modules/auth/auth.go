@@ -5,6 +5,7 @@
 package auth
 
 import (
+	"math/rand"
 	"reflect"
 	"strings"
 	"time"
@@ -91,28 +92,41 @@ func SignedInUser(ctx *macaron.Context, sess session.Store) (*models.User, bool)
 		if setting.Service.EnableReverseProxyAuth {
 			webAuthUser := ctx.Req.Header.Get(setting.ReverseProxyAuthUser)
 			if len(webAuthUser) > 0 {
-				u, err := models.GetUserByName(webAuthUser)
+				u, err := models.GetUserBySandstormID(webAuthUser)
 				if err != nil {
-					if !models.IsErrUserNotExist(err) {
-						log.Error(4, "GetUserByName: %v", err)
+					if !models.IsErrSandstormUserNotExist(err) {
+						log.Error(4, "GetUserBySandstormID: %v", err)
 						return nil, false
 					}
 
 					// Check if enabled auto-registration.
 					if setting.Service.EnableReverseProxyAutoRegister {
-						u := &models.User{
-							Name:     webAuthUser,
-							Email:    uuid.NewV4().String() + "@localhost",
-							Passwd:   webAuthUser,
-							IsActive: true,
+						randomDigit := func() string {
+							return string(rune('0' + rand.Intn(10)))
 						}
-						if err = models.CreateUser(u); err != nil {
-							// FIXME: should I create a system notice?
-							log.Error(4, "CreateUser: %v", err)
-							return nil, false
-						} else {
-							return u, false
+
+						handle := ctx.Req.Header.Get("X-Sandstorm-Preferred-Handle")
+						if len(handle) == 0 {
+							handle = "gogsuser"
 						}
+
+						for suffix := ""; len(suffix) < 5; suffix += randomDigit() {
+							u := &models.User{
+								SandstormId: webAuthUser,
+								Name:        handle + suffix,
+								Email:       uuid.NewV4().String() + "@localhost",
+								Passwd:      webAuthUser,
+								IsActive:    true,
+							}
+							err = models.CreateUser(u)
+							if err == nil {
+								return u, false
+							}
+						}
+
+						// FIXME: should I create a system notice?
+						log.Error(4, "CreateUser: %v", err)
+						return nil, false
 					}
 				}
 				return u, false

@@ -50,10 +50,11 @@ var (
 
 // User represents the object of individual and member of organization.
 type User struct {
-	Id        int64
-	LowerName string `xorm:"UNIQUE NOT NULL"`
-	Name      string `xorm:"UNIQUE NOT NULL"`
-	FullName  string
+	Id          int64
+	SandstormId string `xorm:"CHAR(32) UNIQUE NOT NULL"`
+	LowerName   string `xorm:"UNIQUE NOT NULL"`
+	Name        string `xorm:"UNIQUE NOT NULL"`
+	FullName    string
 	// Email is the primary email address (to be used for communication).
 	Email       string `xorm:"NOT NULL"`
 	Passwd      string `xorm:"NOT NULL"`
@@ -753,6 +754,21 @@ func GetAssigneeByID(repo *Repository, userID int64) (*User, error) {
 		return nil, ErrUserNotExist{userID, ""}
 	}
 	return GetUserByID(userID)
+}
+
+func getUserBySandstormID(e Engine, id string) (*User, error) {
+	u := &User{SandstormId: id}
+	has, err := e.Get(u)
+	if err != nil {
+		return nil, err
+	} else if !has {
+		return nil, ErrSandstormUserNotExist{id, ""}
+	}
+	return u, nil
+}
+
+func GetUserBySandstormID(id string) (*User, error) {
+	return getUserBySandstormID(x, id)
 }
 
 // GetUserByName returns user by given name.

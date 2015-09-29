@@ -68,6 +68,20 @@ func (err ErrUserNotExist) Error() string {
 	return fmt.Sprintf("user does not exist: [uid: %d, name: %s]", err.UID, err.Name)
 }
 
+type ErrSandstormUserNotExist struct {
+	UID  string
+	Name string
+}
+
+func IsErrSandstormUserNotExist(err error) bool {
+	_, ok := err.(ErrSandstormUserNotExist)
+	return ok
+}
+
+func (err ErrSandstormUserNotExist) Error() string {
+	return fmt.Sprintf("user does not exist: [uid: %s, name: %s]", err.UID, err.Name)
+}
+
 type ErrEmailAlreadyUsed struct {
 	Email string
 }
