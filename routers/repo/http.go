@@ -76,20 +76,19 @@ func Http(ctx *middleware.Context) {
 	// Only public pull don't need auth.
 	isPublicPull := !repo.IsPrivate && isPull
 	var (
-		askAuth      = !isPublicPull || setting.Service.RequireSignInView
-		authUser     *models.User
-		authUsername string
+		askAuth  = !isPublicPull || setting.Service.RequireSignInView
+		authUser *models.User
 	)
 
 	// check access
 	if askAuth {
-		authUsername := ctx.Req.Header.Get("X-Sandstorm-User-Id")
-		if authUsername == "" {
+		authSandstormId := ctx.Req.Header.Get("X-Sandstorm-User-Id")
+		if authSandstormId == "" {
 			authRequired(ctx)
 			return
 		}
 
-		authUser, err = models.GetUserByName(authUsername)
+		authUser, err = models.GetUserBySandstormID(authSandstormId)
 		if err != nil {
 			ctx.Handle(500, "UserSignIn error: %v", err)
 			return
@@ -155,7 +154,7 @@ func Http(ctx *middleware.Context) {
 						refName := fields[2]
 
 						// FIXME: handle error.
-						if err = models.Update(refName, oldCommitId, newCommitId, authUsername, username, reponame, authUser.Id); err == nil {
+						if err = models.Update(refName, oldCommitId, newCommitId, authUser.Name, username, reponame, authUser.Id); err == nil {
 							models.HookQueue.AddRepoID(repo.ID)
 						}
 
