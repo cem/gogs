@@ -398,7 +398,7 @@ func CommitRepoAction(
 	payloadSender := &api.PayloadUser{
 		UserName:  pusher.Name,
 		ID:        pusher.Id,
-		AvatarUrl: setting.AppUrl + pusher.RelAvatarLink(),
+		AvatarUrl: pusher.AvatarLink(),
 	}
 
 	switch opType {

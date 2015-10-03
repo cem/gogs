@@ -943,6 +943,12 @@ $(document).ready(function () {
         "top": (-31 * l) + "px",
         "height": (31 * l - 3) + "px"
     });
+
+    var els = document.querySelectorAll('img[src^="mailto:"]');
+    for (var i = 0; i < els.length; ++i) {
+        var el = els[i];
+        el.src = "data:image/png;base64," + new Identicon(el.src.split(":")[1], el.width).toString();
+    }
 });
 
 function homepage() {

@@ -90,9 +90,9 @@ func SignedInUser(ctx *macaron.Context, sess session.Store) (*models.User, bool)
 
 	if uid <= 0 {
 		if setting.Service.EnableReverseProxyAuth {
-			webAuthUser := ctx.Req.Header.Get(setting.ReverseProxyAuthUser)
-			if len(webAuthUser) > 0 {
-				u, err := models.GetUserBySandstormID(webAuthUser)
+			sandstormId := ctx.Req.Header.Get(setting.ReverseProxyAuthUser)
+			if len(sandstormId) > 0 {
+				u, err := models.GetUserBySandstormID(sandstormId)
 				if err != nil {
 					if !models.IsErrSandstormUserNotExist(err) {
 						log.Error(4, "GetUserBySandstormID: %v", err)
@@ -115,13 +115,19 @@ func SignedInUser(ctx *macaron.Context, sess session.Store) (*models.User, bool)
 							handle = "gogsuser"
 						}
 
+						avatarLink := ctx.Req.Header.Get("X-Sandstorm-User-Picture")
+						if len(avatarLink) == 0 {
+							avatarLink = "mailto:" + sandstormId
+						}
+
 						for suffix := ""; len(suffix) < 5; suffix += randomDigit() {
 							u := &models.User{
-								SandstormId: webAuthUser,
-								Name:        handle + suffix,
-								Email:       uuid.NewV4().String() + "@localhost",
-								Passwd:      password,
-								IsActive:    true,
+								SandstormId:     sandstormId,
+								SandstormAvatar: avatarLink,
+								Name:            handle + suffix,
+								Email:           uuid.NewV4().String() + "@localhost",
+								Passwd:          password,
+								IsActive:        true,
 							}
 							err = models.CreateUser(u)
 							if err == nil {
@@ -133,6 +139,15 @@ func SignedInUser(ctx *macaron.Context, sess session.Store) (*models.User, bool)
 						log.Error(4, "CreateUser: %v", err)
 						return nil, false
 					}
+				}
+
+				newAvatar := ctx.Req.Header.Get("X-Sandstorm-User-Picture")
+				if len(newAvatar) == 0 {
+					newAvatar = "mailto:" + sandstormId
+				}
+				if u.SandstormAvatar != newAvatar {
+					u.SandstormAvatar = newAvatar
+					models.UpdateUser(u)
 				}
 				return u, false
 			}
