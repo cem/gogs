@@ -241,7 +241,7 @@ func (pr *PullRequest) Merge(doer *User, baseGitRepo *git.Repository) (err error
 		Sender: &api.PayloadUser{
 			UserName:  doer.Name,
 			ID:        doer.Id,
-			AvatarUrl: setting.AppUrl + doer.RelAvatarLink(),
+			AvatarUrl: setting.AppUrl + doer.AvatarLink(),
 		},
 	}
 	if err = PrepareWebhooks(pr.BaseRepo, HOOK_EVENT_PUSH, p); err != nil {

@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/gogits/gogs/models"
-	"github.com/gogits/gogs/modules/base"
 	"github.com/gogits/gogs/modules/log"
 	"github.com/gogits/gogs/modules/middleware"
 	"github.com/gogits/gogs/modules/setting"
@@ -162,7 +161,7 @@ func HTTP(ctx *middleware.Context) {
 					refName := fields[2]
 
 					// FIXME: handle error.
-					if err = models.Update(refName, oldCommitId, newCommitId, authUser.name, username, reponame, authUser.Id); err == nil {
+					if err = models.Update(refName, oldCommitId, newCommitId, authUser.Name, username, reponame, authUser.Id); err == nil {
 						go models.HookQueue.Add(repo.ID)
 						go models.AddTestPullRequestTask(repo.ID, strings.TrimPrefix(refName, "refs/heads/"))
 					}
