@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"mime/multipart"
 	"os"
 	"path"
@@ -20,9 +19,7 @@ import (
 	"github.com/go-xorm/xorm"
 
 	"github.com/gogits/gogs/modules/base"
-	"github.com/gogits/gogs/modules/git"
 	"github.com/gogits/gogs/modules/log"
-	"github.com/gogits/gogs/modules/process"
 	"github.com/gogits/gogs/modules/setting"
 	gouuid "github.com/gogits/gogs/modules/uuid"
 )
@@ -94,15 +91,6 @@ func (i *Issue) AfterSet(colName string, _ xorm.Cell) {
 		i.Assignee, err = GetUserByID(i.AssigneeID)
 		if err != nil {
 			log.Error(3, "GetUserByID[%d]: %v", i.ID, err)
-		}
-	case "is_pull":
-		if !i.IsPull {
-			return
-		}
-
-		i.PullRequest, err = GetPullRequestByPullID(i.ID)
-		if err != nil {
-			log.Error(3, "GetPullRequestByPullID[%d]: %v", i.ID, err)
 		}
 	case "created":
 		i.Created = regulateTimeZone(i.Created)
@@ -236,7 +224,7 @@ func (i *Issue) changeStatus(e *xorm.Session, doer *User, isClosed bool) (err er
 	}
 	i.IsClosed = isClosed
 
-	if err = updateIssue(e, i); err != nil {
+	if err = updateIssueCols(e, i, "is_closed"); err != nil {
 		return err
 	} else if err = updateIssueUsersByStatus(e, i.ID, isClosed); err != nil {
 		return err
@@ -283,6 +271,15 @@ func (i *Issue) ChangeStatus(doer *User, isClosed bool) (err error) {
 	}
 
 	return sess.Commit()
+}
+
+func (i *Issue) GetPullRequest() (err error) {
+	if i.PullRequest != nil {
+		return nil
+	}
+
+	i.PullRequest, err = GetPullRequestByIssueID(i.ID)
+	return err
 }
 
 // It's caller's responsibility to create action.
@@ -668,6 +665,47 @@ func GetIssueUserPairsByMode(uid, rid int64, isClosed bool, page, filterMode int
 	return ius, err
 }
 
+func UpdateMentions(userNames []string, issueId int64) error {
+	for i := range userNames {
+		userNames[i] = strings.ToLower(userNames[i])
+	}
+	users := make([]*User, 0, len(userNames))
+
+	if err := x.Where("lower_name IN (?)", strings.Join(userNames, "\",\"")).OrderBy("lower_name ASC").Find(&users); err != nil {
+		return err
+	}
+
+	ids := make([]int64, 0, len(userNames))
+	for _, user := range users {
+		ids = append(ids, user.Id)
+		if !user.IsOrganization() {
+			continue
+		}
+
+		if user.NumMembers == 0 {
+			continue
+		}
+
+		tempIds := make([]int64, 0, user.NumMembers)
+		orgUsers, err := GetOrgUsersByOrgId(user.Id)
+		if err != nil {
+			return err
+		}
+
+		for _, orgUser := range orgUsers {
+			tempIds = append(tempIds, orgUser.ID)
+		}
+
+		ids = append(ids, tempIds...)
+	}
+
+	if err := UpdateIssueUsersByMentions(ids, issueId); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // IssueStats represents issue statistic information.
 type IssueStats struct {
 	OpenCount, ClosedCount int64
@@ -721,32 +759,28 @@ func GetIssueStats(opts *IssueStatsOptions) *IssueStats {
 	if opts.AssigneeID > 0 {
 		baseCond += " AND assignee_id=" + com.ToStr(opts.AssigneeID)
 	}
-	if opts.IsPull {
-		baseCond += " AND issue.is_pull=1"
-	} else {
-		baseCond += " AND issue.is_pull=0"
-	}
+	baseCond += " AND issue.is_pull=?"
 
 	switch opts.FilterMode {
 	case FM_ALL, FM_ASSIGN:
-		results, _ := x.Query(queryStr+baseCond, false)
+		results, _ := x.Query(queryStr+baseCond, false, opts.IsPull)
 		stats.OpenCount = parseCountResult(results)
-		results, _ = x.Query(queryStr+baseCond, true)
+		results, _ = x.Query(queryStr+baseCond, true, opts.IsPull)
 		stats.ClosedCount = parseCountResult(results)
 
 	case FM_CREATE:
 		baseCond += " AND poster_id=?"
-		results, _ := x.Query(queryStr+baseCond, false, opts.UserID)
+		results, _ := x.Query(queryStr+baseCond, false, opts.IsPull, opts.UserID)
 		stats.OpenCount = parseCountResult(results)
-		results, _ = x.Query(queryStr+baseCond, true, opts.UserID)
+		results, _ = x.Query(queryStr+baseCond, true, opts.IsPull, opts.UserID)
 		stats.ClosedCount = parseCountResult(results)
 
 	case FM_MENTION:
 		queryStr += " INNER JOIN `issue_user` ON `issue`.id=`issue_user`.issue_id"
 		baseCond += " AND `issue_user`.uid=? AND `issue_user`.is_mentioned=?"
-		results, _ := x.Query(queryStr+baseCond, false, opts.UserID, true)
+		results, _ := x.Query(queryStr+baseCond, false, opts.IsPull, opts.UserID, true)
 		stats.OpenCount = parseCountResult(results)
-		results, _ = x.Query(queryStr+baseCond, true, opts.UserID, true)
+		results, _ = x.Query(queryStr+baseCond, true, opts.IsPull, opts.UserID, true)
 		stats.ClosedCount = parseCountResult(results)
 	}
 	return stats
@@ -821,9 +855,15 @@ func updateIssue(e Engine, issue *Issue) error {
 	return err
 }
 
-// UpdateIssue updates information of issue.
+// UpdateIssue updates all fields of given issue.
 func UpdateIssue(issue *Issue) error {
 	return updateIssue(x, issue)
+}
+
+// updateIssueCols updates specific fields of given issue.
+func updateIssueCols(e Engine, issue *Issue, cols ...string) error {
+	_, err := e.Id(issue.ID).Cols(cols...).Update(issue)
+	return err
 }
 
 func updateIssueUsersByStatus(e Engine, issueID int64, isClosed bool) error {
@@ -892,233 +932,6 @@ func UpdateIssueUsersByMentions(uids []int64, iid int64) error {
 		}
 	}
 	return nil
-}
-
-// __________      .__  .__ __________                                     __
-// \______   \__ __|  | |  |\______   \ ____  ________ __   ____   _______/  |_
-//  |     ___/  |  \  | |  | |       _// __ \/ ____/  |  \_/ __ \ /  ___/\   __\
-//  |    |   |  |  /  |_|  |_|    |   \  ___< <_|  |  |  /\  ___/ \___ \  |  |
-//  |____|   |____/|____/____/____|_  /\___  >__   |____/  \___  >____  > |__|
-//                                  \/     \/   |__|           \/     \/
-
-type PullRequestType int
-
-const (
-	PULL_REQUEST_GOGS = iota
-	PLLL_ERQUEST_GIT
-)
-
-// PullRequest represents relation between pull request and repositories.
-type PullRequest struct {
-	ID             int64  `xorm:"pk autoincr"`
-	PullID         int64  `xorm:"INDEX"`
-	Pull           *Issue `xorm:"-"`
-	PullIndex      int64
-	HeadRepoID     int64
-	HeadRepo       *Repository `xorm:"-"`
-	BaseRepoID     int64
-	HeadUserName   string
-	HeadBarcnh     string
-	BaseBranch     string
-	MergeBase      string `xorm:"VARCHAR(40)"`
-	MergedCommitID string `xorm:"VARCHAR(40)"`
-	Type           PullRequestType
-	CanAutoMerge   bool
-	HasMerged      bool
-	Merged         time.Time
-	MergerID       int64
-	Merger         *User `xorm:"-"`
-}
-
-func (pr *PullRequest) AfterSet(colName string, _ xorm.Cell) {
-	var err error
-	switch colName {
-	case "head_repo_id":
-		pr.HeadRepo, err = GetRepositoryByID(pr.HeadRepoID)
-		if err != nil {
-			log.Error(3, "GetRepositoryByID[%d]: %v", pr.ID, err)
-		}
-	case "merger_id":
-		if !pr.HasMerged {
-			return
-		}
-
-		pr.Merger, err = GetUserByID(pr.MergerID)
-		if err != nil {
-			if IsErrUserNotExist(err) {
-				pr.MergerID = -1
-				pr.Merger = NewFakeUser()
-			} else {
-				log.Error(3, "GetUserByID[%d]: %v", pr.ID, err)
-			}
-		}
-	case "merged":
-		if !pr.HasMerged {
-			return
-		}
-
-		pr.Merged = regulateTimeZone(pr.Merged)
-	}
-}
-
-// Merge merges pull request to base repository.
-func (pr *PullRequest) Merge(doer *User, baseGitRepo *git.Repository) (err error) {
-	sess := x.NewSession()
-	defer sessionRelease(sess)
-	if err = sess.Begin(); err != nil {
-		return err
-	}
-
-	if err = pr.Pull.changeStatus(sess, doer, true); err != nil {
-		return fmt.Errorf("Pull.changeStatus: %v", err)
-	}
-
-	headRepoPath := RepoPath(pr.HeadUserName, pr.HeadRepo.Name)
-	headGitRepo, err := git.OpenRepository(headRepoPath)
-	if err != nil {
-		return fmt.Errorf("OpenRepository: %v", err)
-	}
-	pr.MergedCommitID, err = headGitRepo.GetCommitIdOfBranch(pr.HeadBarcnh)
-	if err != nil {
-		return fmt.Errorf("GetCommitIdOfBranch: %v", err)
-	}
-
-	if err = mergePullRequestAction(sess, doer, pr.Pull.Repo, pr.Pull); err != nil {
-		return fmt.Errorf("mergePullRequestAction: %v", err)
-	}
-
-	pr.HasMerged = true
-	pr.Merged = time.Now()
-	pr.MergerID = doer.Id
-	if _, err = sess.Id(pr.ID).AllCols().Update(pr); err != nil {
-		return fmt.Errorf("update pull request: %v", err)
-	}
-
-	// Clone base repo.
-	tmpBasePath := path.Join("data/tmp/repos", com.ToStr(time.Now().Nanosecond())+".git")
-	os.MkdirAll(path.Dir(tmpBasePath), os.ModePerm)
-	defer os.RemoveAll(path.Dir(tmpBasePath))
-
-	var stderr string
-	if _, stderr, err = process.ExecTimeout(5*time.Minute,
-		fmt.Sprintf("PullRequest.Merge(git clone): %s", tmpBasePath),
-		"git", "clone", baseGitRepo.Path, tmpBasePath); err != nil {
-		return fmt.Errorf("git clone: %s", stderr)
-	}
-
-	// Check out base branch.
-	if _, stderr, err = process.ExecDir(-1, tmpBasePath,
-		fmt.Sprintf("PullRequest.Merge(git checkout): %s", tmpBasePath),
-		"git", "checkout", pr.BaseBranch); err != nil {
-		return fmt.Errorf("git checkout: %s", stderr)
-	}
-
-	// Pull commits.
-	if _, stderr, err = process.ExecDir(-1, tmpBasePath,
-		fmt.Sprintf("PullRequest.Merge(git pull): %s", tmpBasePath),
-		"git", "pull", headRepoPath, pr.HeadBarcnh); err != nil {
-		return fmt.Errorf("git pull: %s", stderr)
-	}
-
-	// Push back to upstream.
-	if _, stderr, err = process.ExecDir(-1, tmpBasePath,
-		fmt.Sprintf("PullRequest.Merge(git push): %s", tmpBasePath),
-		"git", "push", baseGitRepo.Path, pr.BaseBranch); err != nil {
-		return fmt.Errorf("git push: %s", stderr)
-	}
-
-	return sess.Commit()
-}
-
-// NewPullRequest creates new pull request with labels for repository.
-func NewPullRequest(repo *Repository, pull *Issue, labelIDs []int64, uuids []string, pr *PullRequest, patch []byte) (err error) {
-	sess := x.NewSession()
-	defer sessionRelease(sess)
-	if err = sess.Begin(); err != nil {
-		return err
-	}
-
-	if err = newIssue(sess, repo, pull, labelIDs, uuids, true); err != nil {
-		return fmt.Errorf("newIssue: %v", err)
-	}
-
-	// Notify watchers.
-	act := &Action{
-		ActUserID:    pull.Poster.Id,
-		ActUserName:  pull.Poster.Name,
-		ActEmail:     pull.Poster.Email,
-		OpType:       CREATE_PULL_REQUEST,
-		Content:      fmt.Sprintf("%d|%s", pull.Index, pull.Name),
-		RepoID:       repo.ID,
-		RepoUserName: repo.Owner.Name,
-		RepoName:     repo.Name,
-		IsPrivate:    repo.IsPrivate,
-	}
-	if err = notifyWatchers(sess, act); err != nil {
-		return err
-	}
-
-	// Test apply patch.
-	repoPath, err := repo.RepoPath()
-	if err != nil {
-		return fmt.Errorf("RepoPath: %v", err)
-	}
-	patchPath := path.Join(repoPath, "pulls", com.ToStr(pr.ID)+".patch")
-
-	os.MkdirAll(path.Dir(patchPath), os.ModePerm)
-	if err = ioutil.WriteFile(patchPath, patch, 0644); err != nil {
-		return fmt.Errorf("save patch: %v", err)
-	}
-	defer os.Remove(patchPath)
-
-	stdout, stderr, err := process.ExecDir(-1, repoPath,
-		fmt.Sprintf("NewPullRequest(git apply --check): %d", repo.ID),
-		"git", "apply", "--check", "-v", patchPath)
-	if err != nil {
-		if strings.Contains(stderr, "fatal:") {
-			return fmt.Errorf("git apply --check: %v - %s", err, stderr)
-		}
-	}
-	pr.CanAutoMerge = !strings.Contains(stdout, "error: patch failed:")
-
-	pr.PullID = pull.ID
-	pr.PullIndex = pull.Index
-	if _, err = sess.Insert(pr); err != nil {
-		return fmt.Errorf("insert pull repo: %v", err)
-	}
-
-	return sess.Commit()
-}
-
-// GetUnmergedPullRequest returnss a pull request hasn't been merged by given info.
-func GetUnmergedPullRequest(headRepoID, baseRepoID int64, headBranch, baseBranch string) (*PullRequest, error) {
-	pr := &PullRequest{
-		HeadRepoID: headRepoID,
-		BaseRepoID: baseRepoID,
-		HeadBarcnh: headBranch,
-		BaseBranch: baseBranch,
-	}
-
-	has, err := x.Where("has_merged=?", false).Get(pr)
-	if err != nil {
-		return nil, err
-	} else if !has {
-		return nil, ErrPullRequestNotExist{0, 0, headRepoID, baseRepoID, headBranch, baseBranch}
-	}
-
-	return pr, nil
-}
-
-// GetPullRequestByPullID returns pull repo by given pull ID.
-func GetPullRequestByPullID(pullID int64) (*PullRequest, error) {
-	pr := new(PullRequest)
-	has, err := x.Where("pull_id=?", pullID).Get(pr)
-	if err != nil {
-		return nil, err
-	} else if !has {
-		return nil, ErrPullRequestNotExist{0, pullID, 0, 0, "", ""}
-	}
-	return pr, nil
 }
 
 // .____          ___.          .__
@@ -1525,7 +1338,7 @@ func changeMilestoneIssueStats(e *xorm.Session, issue *Issue) error {
 }
 
 // ChangeMilestoneIssueStats updates the open/closed issues counter and progress
-// for the milestone associated witht the given issue.
+// for the milestone associated with the given issue.
 func ChangeMilestoneIssueStats(issue *Issue) (err error) {
 	sess := x.NewSession()
 	defer sessionRelease(sess)
@@ -1599,8 +1412,8 @@ func ChangeMilestoneAssign(oldMid int64, issue *Issue) (err error) {
 }
 
 // DeleteMilestoneByID deletes a milestone by given ID.
-func DeleteMilestoneByID(mid int64) error {
-	m, err := GetMilestoneByID(mid)
+func DeleteMilestoneByID(id int64) error {
+	m, err := GetMilestoneByID(id)
 	if err != nil {
 		if IsErrMilestoneNotExist(err) {
 			return nil
@@ -1782,13 +1595,13 @@ func createComment(e *xorm.Session, u *User, repo *Repository, issue *Issue, com
 		// Notify watchers.
 		act := &Action{
 			ActUserID:    u.Id,
-			ActUserName:  u.LowerName,
+			ActUserName:  u.Name,
 			ActEmail:     u.Email,
 			OpType:       COMMENT_ISSUE,
 			Content:      fmt.Sprintf("%d|%s", issue.Index, strings.Split(content, "\n")[0]),
 			RepoID:       repo.ID,
-			RepoUserName: repo.Owner.LowerName,
-			RepoName:     repo.LowerName,
+			RepoUserName: repo.Owner.Name,
+			RepoName:     repo.Name,
 			IsPrivate:    repo.IsPrivate,
 		}
 		if err = notifyWatchers(e, act); err != nil {

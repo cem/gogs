@@ -14,12 +14,13 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/Unknwon/com"
 	"github.com/go-xorm/xorm"
 
+	"github.com/gogits/git-module"
 	api "github.com/gogits/go-gogs-client"
 
 	"github.com/gogits/gogs/modules/base"
-	"github.com/gogits/gogs/modules/git"
 	"github.com/gogits/gogs/modules/log"
 	"github.com/gogits/gogs/modules/setting"
 )
@@ -89,51 +90,87 @@ func (a *Action) AfterSet(colName string, _ xorm.Cell) {
 	}
 }
 
-func (a Action) GetOpType() int {
+func (a *Action) GetOpType() int {
 	return int(a.OpType)
 }
 
-func (a Action) GetActUserName() string {
+func (a *Action) GetActUserName() string {
 	return a.ActUserName
 }
 
-func (a Action) GetActEmail() string {
+func (a *Action) ShortActUserName() string {
+	return base.EllipsisString(a.ActUserName, 20)
+}
+
+func (a *Action) GetActEmail() string {
 	return a.ActEmail
 }
 
-func (a Action) GetRepoUserName() string {
+func (a *Action) GetRepoUserName() string {
 	return a.RepoUserName
 }
 
-func (a Action) GetRepoName() string {
+func (a *Action) ShortRepoUserName() string {
+	return base.EllipsisString(a.RepoUserName, 20)
+}
+
+func (a *Action) GetRepoName() string {
 	return a.RepoName
 }
 
-func (a Action) GetRepoPath() string {
+func (a *Action) ShortRepoName() string {
+	return base.EllipsisString(a.RepoName, 33)
+}
+
+func (a *Action) GetRepoPath() string {
 	return path.Join(a.RepoUserName, a.RepoName)
 }
 
-func (a Action) GetRepoLink() string {
+func (a *Action) ShortRepoPath() string {
+	return path.Join(a.ShortRepoUserName(), a.ShortRepoName())
+}
+
+func (a *Action) GetRepoLink() string {
 	if len(setting.AppSubUrl) > 0 {
 		return path.Join(setting.AppSubUrl, a.GetRepoPath())
 	}
 	return "/" + a.GetRepoPath()
 }
 
-func (a Action) GetBranch() string {
+func (a *Action) GetBranch() string {
 	return a.RefName
 }
 
-func (a Action) GetContent() string {
+func (a *Action) GetContent() string {
 	return a.Content
 }
 
-func (a Action) GetCreate() time.Time {
+func (a *Action) GetCreate() time.Time {
 	return a.Created
 }
 
-func (a Action) GetIssueInfos() []string {
+func (a *Action) GetIssueInfos() []string {
 	return strings.SplitN(a.Content, "|", 2)
+}
+
+func (a *Action) GetIssueTitle() string {
+	index := com.StrTo(a.GetIssueInfos()[0]).MustInt64()
+	issue, err := GetIssueByIndex(a.RepoID, index)
+	if err != nil {
+		log.Error(4, "GetIssueByIndex: %v", err)
+		return "500 when get issue"
+	}
+	return issue.Name
+}
+
+func (a *Action) GetIssueContent() string {
+	index := com.StrTo(a.GetIssueInfos()[0]).MustInt64()
+	issue, err := GetIssueByIndex(a.RepoID, index)
+	if err != nil {
+		log.Error(4, "GetIssueByIndex: %v", err)
+		return "500 when get issue"
+	}
+	return issue.Content
 }
 
 func newRepoAction(e Engine, u *User, repo *Repository) (err error) {
@@ -147,7 +184,7 @@ func newRepoAction(e Engine, u *User, repo *Repository) (err error) {
 		RepoName:     repo.Name,
 		IsPrivate:    repo.IsPrivate,
 	}); err != nil {
-		return fmt.Errorf("notify watchers '%d/%s': %v", u.Id, repo.ID, err)
+		return fmt.Errorf("notify watchers '%d/%d': %v", u.Id, repo.ID, err)
 	}
 
 	log.Trace("action.newRepoAction: %s/%s", u.Name, repo.Name)
@@ -187,9 +224,74 @@ func issueIndexTrimRight(c rune) bool {
 	return !unicode.IsDigit(c)
 }
 
+type PushCommit struct {
+	Sha1        string
+	Message     string
+	AuthorEmail string
+	AuthorName  string
+}
+
+type PushCommits struct {
+	Len        int
+	Commits    []*PushCommit
+	CompareUrl string
+
+	avatars map[string]string
+}
+
+func NewPushCommits() *PushCommits {
+	return &PushCommits{
+		avatars: make(map[string]string),
+	}
+}
+
+func (pc *PushCommits) ToApiPayloadCommits(repoLink string) []*api.PayloadCommit {
+	commits := make([]*api.PayloadCommit, len(pc.Commits))
+	for i, cmt := range pc.Commits {
+		author_username := ""
+		author, err := GetUserByEmail(cmt.AuthorEmail)
+		if err == nil {
+			author_username = author.Name
+		}
+		commits[i] = &api.PayloadCommit{
+			ID:      cmt.Sha1,
+			Message: cmt.Message,
+			URL:     fmt.Sprintf("%s/commit/%s", repoLink, cmt.Sha1),
+			Author: &api.PayloadAuthor{
+				Name:     cmt.AuthorName,
+				Email:    cmt.AuthorEmail,
+				UserName: author_username,
+			},
+		}
+	}
+	return commits
+}
+
+// AvatarLink tries to match user in database with e-mail
+// in order to show custom avatar, and falls back to general avatar link.
+func (push *PushCommits) AvatarLink(email string) string {
+	_, ok := push.avatars[email]
+	if !ok {
+		u, err := GetUserByEmail(email)
+		if err != nil {
+			push.avatars[email] = base.AvatarLink(email)
+			if !IsErrUserNotExist(err) {
+				log.Error(4, "GetUserByEmail: %v", err)
+			}
+		} else {
+			push.avatars[email] = u.AvatarLink()
+		}
+	}
+
+	return push.avatars[email]
+}
+
 // updateIssuesCommit checks if issues are manipulated by commit message.
-func updateIssuesCommit(u *User, repo *Repository, repoUserName, repoName string, commits []*base.PushCommit) error {
-	for _, c := range commits {
+func updateIssuesCommit(u *User, repo *Repository, repoUserName, repoName string, commits []*PushCommit) error {
+	// Commits are appended in the reverse order.
+	for i := len(commits) - 1; i >= 0; i-- {
+		c := commits[i]
+
 		refMarked := make(map[int64]bool)
 		for _, ref := range IssueReferenceKeywordsPat.FindAllString(c.Message, -1) {
 			ref = ref[strings.IndexByte(ref, byte(' '))+1:]
@@ -210,6 +312,9 @@ func updateIssuesCommit(u *User, repo *Repository, repoUserName, repoName string
 
 			issue, err := GetIssueByRef(ref)
 			if err != nil {
+				if IsErrIssueNotExist(err) {
+					continue
+				}
 				return err
 			}
 
@@ -246,6 +351,9 @@ func updateIssuesCommit(u *User, repo *Repository, repoUserName, repoName string
 
 			issue, err := GetIssueByRef(ref)
 			if err != nil {
+				if IsErrIssueNotExist(err) {
+					continue
+				}
 				return err
 			}
 
@@ -283,6 +391,9 @@ func updateIssuesCommit(u *User, repo *Repository, repoUserName, repoName string
 
 			issue, err := GetIssueByRef(ref)
 			if err != nil {
+				if IsErrIssueNotExist(err) {
+					continue
+				}
 				return err
 			}
 
@@ -310,7 +421,7 @@ func CommitRepoAction(
 	repoID int64,
 	repoUserName, repoName string,
 	refFullName string,
-	commit *base.PushCommits,
+	commit *PushCommits,
 	oldCommitID string, newCommitID string) error {
 
 	u, err := GetUserByID(userID)
@@ -325,29 +436,33 @@ func CommitRepoAction(
 		return fmt.Errorf("GetOwner: %v", err)
 	}
 
+	// Change repository bare status and update last updated time.
+	repo.IsBare = false
+	if err = UpdateRepository(repo, false); err != nil {
+		return fmt.Errorf("UpdateRepository: %v", err)
+	}
+
 	isNewBranch := false
 	opType := COMMIT_REPO
 	// Check it's tag push or branch.
 	if strings.HasPrefix(refFullName, "refs/tags/") {
 		opType = PUSH_TAG
-		commit = &base.PushCommits{}
+		commit = &PushCommits{}
 	} else {
 		// if not the first commit, set the compareUrl
 		if !strings.HasPrefix(oldCommitID, "0000000") {
-			commit.CompareUrl = fmt.Sprintf("%s/%s/compare/%s...%s", repoUserName, repoName, oldCommitID, newCommitID)
+			commit.CompareUrl = repo.ComposeCompareURL(oldCommitID, newCommitID)
 		} else {
 			isNewBranch = true
 		}
 
-		// Change repository bare status and update last updated time.
-		repo.IsBare = false
-		if err = UpdateRepository(repo, false); err != nil {
-			return fmt.Errorf("UpdateRepository: %v", err)
-		}
-
 		if err = updateIssuesCommit(u, repo, repoUserName, repoName, commit.Commits); err != nil {
-			log.Debug("updateIssuesCommit: %v", err)
+			log.Error(4, "updateIssuesCommit: %v", err)
 		}
+	}
+
+	if len(commit.Commits) > setting.FeedMaxCommitNum {
+		commit.Commits = commit.Commits[:setting.FeedMaxCommitNum]
 	}
 
 	bs, err := json.Marshal(commit)
@@ -370,24 +485,9 @@ func CommitRepoAction(
 		IsPrivate:    repo.IsPrivate,
 	}); err != nil {
 		return fmt.Errorf("NotifyWatchers: %v", err)
-
 	}
 
-	repoLink := fmt.Sprintf("%s%s/%s", setting.AppUrl, repoUserName, repoName)
-	payloadRepo := &api.PayloadRepo{
-		ID:          repo.ID,
-		Name:        repo.LowerName,
-		URL:         repoLink,
-		Description: repo.Description,
-		Website:     repo.Website,
-		Watchers:    repo.NumWatches,
-		Owner: &api.PayloadAuthor{
-			Name:     repo.Owner.DisplayName(),
-			Email:    repo.Owner.Email,
-			UserName: repo.Owner.Name,
-		},
-		Private: repo.IsPrivate,
-	}
+	payloadRepo := repo.ComposePayload()
 
 	pusher_email, pusher_name := "", ""
 	pusher, err := GetUserByName(userName)
@@ -403,30 +503,12 @@ func CommitRepoAction(
 
 	switch opType {
 	case COMMIT_REPO: // Push
-		commits := make([]*api.PayloadCommit, len(commit.Commits))
-		for i, cmt := range commit.Commits {
-			author_username := ""
-			author, err := GetUserByEmail(cmt.AuthorEmail)
-			if err == nil {
-				author_username = author.Name
-			}
-			commits[i] = &api.PayloadCommit{
-				ID:      cmt.Sha1,
-				Message: cmt.Message,
-				URL:     fmt.Sprintf("%s/commit/%s", repoLink, cmt.Sha1),
-				Author: &api.PayloadAuthor{
-					Name:     cmt.AuthorName,
-					Email:    cmt.AuthorEmail,
-					UserName: author_username,
-				},
-			}
-		}
 		p := &api.PushPayload{
 			Ref:        refFullName,
 			Before:     oldCommitID,
 			After:      newCommitID,
 			CompareUrl: setting.AppUrl + commit.CompareUrl,
-			Commits:    commits,
+			Commits:    commit.ToApiPayloadCommits(repo.FullRepoLink()),
 			Repo:       payloadRepo,
 			Pusher: &api.PayloadAuthor{
 				Name:     pusher_name,
@@ -472,7 +554,7 @@ func transferRepoAction(e Engine, actUser, oldOwner, newOwner *User, repo *Repos
 		IsPrivate:    repo.IsPrivate,
 		Content:      path.Join(oldOwner.LowerName, repo.LowerName),
 	}); err != nil {
-		return fmt.Errorf("notify watchers '%d/%s': %v", actUser.Id, repo.ID, err)
+		return fmt.Errorf("notify watchers '%d/%d': %v", actUser.Id, repo.ID, err)
 	}
 
 	// Remove watch for organization.

@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"net/url"
 
-	"github.com/Unknwon/macaron"
-	"github.com/macaron-contrib/csrf"
+	"github.com/go-macaron/csrf"
+	"gopkg.in/macaron.v1"
 
 	"github.com/gogits/gogs/models"
 	"github.com/gogits/gogs/modules/auth"
@@ -54,7 +54,7 @@ func AutoSignIn(ctx *Context) (bool, error) {
 	}
 
 	if val, _ := ctx.GetSuperSecureCookie(
-		base.EncodeMd5(u.Rands+u.Passwd), setting.CookieRememberName); val != u.Name {
+		base.EncodeMD5(u.Rands+u.Passwd), setting.CookieRememberName); val != u.Name {
 		return false, nil
 	}
 
@@ -95,7 +95,7 @@ func Toggle(options *ToggleOptions) macaron.Handler {
 			if !ctx.IsSigned {
 				// Restrict API calls with error message.
 				if auth.IsAPIPath(ctx.Req.URL.Path) {
-					ctx.HandleAPI(403, "Only signed in user is allowed to call APIs.")
+					ctx.APIError(403, "", "Only signed in user is allowed to call APIs.")
 					return
 				}
 
@@ -109,31 +109,25 @@ func Toggle(options *ToggleOptions) macaron.Handler {
 			}
 		}
 
+		// Try auto-signin when not signed in.
+		if !options.SignOutRequire && !ctx.IsSigned && !auth.IsAPIPath(ctx.Req.URL.Path) {
+			succeed, err := AutoSignIn(ctx)
+			if err != nil {
+				ctx.Handle(500, "AutoSignIn", err)
+				return
+			} else if succeed {
+				log.Trace("Auto-login succeed: %s", ctx.Session.Get("uname"))
+				ctx.Redirect(setting.AppSubUrl + ctx.Req.RequestURI)
+				return
+			}
+		}
+
 		if options.AdminRequire {
 			if !ctx.User.IsAdmin {
 				ctx.Error(403)
 				return
 			}
 			ctx.Data["PageIsAdmin"] = true
-		}
-	}
-}
-
-// Contexter middleware already checks token for user sign in process.
-func ApiReqToken() macaron.Handler {
-	return func(ctx *Context) {
-		if !ctx.IsSigned {
-			ctx.Error(401)
-			return
-		}
-	}
-}
-
-func ApiReqBasicAuth() macaron.Handler {
-	return func(ctx *Context) {
-		if !ctx.IsBasicAuth {
-			ctx.Error(401)
-			return
 		}
 	}
 }

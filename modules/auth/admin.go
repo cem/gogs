@@ -5,17 +5,18 @@
 package auth
 
 import (
-	"github.com/Unknwon/macaron"
+	"gopkg.in/macaron.v1"
 
-	"github.com/macaron-contrib/binding"
+	"github.com/go-macaron/binding"
 )
 
 type AdminCrateUserForm struct {
-	LoginType string `binding:"Required"`
-	LoginName string
-	UserName  string `binding:"Required;AlphaDashDot;MaxSize(35)"`
-	Email     string `binding:"Required;Email;MaxSize(254)"`
-	Password  string `binding:"MaxSize(255)"`
+	LoginType  string `binding:"Required"`
+	LoginName  string
+	UserName   string `binding:"Required;AlphaDashDot;MaxSize(35)"`
+	Email      string `binding:"Required;Email;MaxSize(254)"`
+	Password   string `binding:"MaxSize(255)"`
+	SendNotify bool
 }
 
 func (f *AdminCrateUserForm) Validate(ctx *macaron.Context, errs binding.Errors) binding.Errors {
@@ -23,16 +24,18 @@ func (f *AdminCrateUserForm) Validate(ctx *macaron.Context, errs binding.Errors)
 }
 
 type AdminEditUserForm struct {
-	LoginType    string `binding:"Required"`
-	LoginName    string
-	FullName     string `binding:"MaxSize(100)"`
-	Email        string `binding:"Required;Email;MaxSize(254)"`
-	Password     string `binding:"MaxSize(255)"`
-	Website      string `binding:"MaxSize(50)"`
-	Location     string `binding:"MaxSize(50)"`
-	Active       bool
-	Admin        bool
-	AllowGitHook bool
+	LoginType        string `binding:"Required"`
+	LoginName        string
+	FullName         string `binding:"MaxSize(100)"`
+	Email            string `binding:"Required;Email;MaxSize(254)"`
+	Password         string `binding:"MaxSize(255)"`
+	Website          string `binding:"MaxSize(50)"`
+	Location         string `binding:"MaxSize(50)"`
+	MaxRepoCreation  int
+	Active           bool
+	Admin            bool
+	AllowGitHook     bool
+	AllowImportLocal bool
 }
 
 func (f *AdminEditUserForm) Validate(ctx *macaron.Context, errs binding.Errors) binding.Errors {

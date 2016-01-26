@@ -18,19 +18,32 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Unknwon/com"
 	"github.com/Unknwon/i18n"
 	"github.com/microcosm-cc/bluemonday"
 
+	"github.com/gogits/chardet"
+
 	"github.com/gogits/gogs/modules/avatar"
+	"github.com/gogits/gogs/modules/log"
 	"github.com/gogits/gogs/modules/setting"
 )
 
-var Sanitizer = bluemonday.UGCPolicy().AllowAttrs("class").Matching(regexp.MustCompile(`[\p{L}\p{N}\s\-_',:\[\]!\./\\\(\)&]*`)).OnElements("code")
+func BuildSanitizer() (p *bluemonday.Policy) {
+	p = bluemonday.UGCPolicy()
+	p.AllowAttrs("class").Matching(regexp.MustCompile(`[\p{L}\p{N}\s\-_',:\[\]!\./\\\(\)&]*`)).OnElements("code")
 
-// Encode string to md5 hex value.
-func EncodeMd5(str string) string {
+	p.AllowAttrs("type").Matching(regexp.MustCompile(`^checkbox$`)).OnElements("input")
+	p.AllowAttrs("checked", "disabled").OnElements("input")
+	return p
+}
+
+var Sanitizer = BuildSanitizer()
+
+// EncodeMD5 encodes string to md5 hex value.
+func EncodeMD5(str string) string {
 	m := md5.New()
 	m.Write([]byte(str))
 	return hex.EncodeToString(m.Sum(nil))
@@ -41,6 +54,29 @@ func EncodeSha1(str string) string {
 	h := sha1.New()
 	h.Write([]byte(str))
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func ShortSha(sha1 string) string {
+	if len(sha1) == 40 {
+		return sha1[:10]
+	}
+	return sha1
+}
+
+func DetectEncoding(content []byte) (string, error) {
+	if utf8.Valid(content) {
+		log.Debug("Detected encoding: utf-8 (fast)")
+		return "UTF-8", nil
+	}
+
+	result, err := chardet.NewTextDetector().DetectBest(content)
+	if result.Charset != "UTF-8" && len(setting.Repository.AnsiCharset) > 0 {
+		log.Debug("Using default AnsiCharset: %s", setting.Repository.AnsiCharset)
+		return setting.Repository.AnsiCharset, err
+	}
+
+	log.Debug("Detected encoding: %s", result.Charset)
+	return result.Charset, err
 }
 
 func BasicAuthDecode(encoded string) (string, string, error) {
@@ -424,6 +460,15 @@ func Subtract(left interface{}, right interface{}) interface{} {
 	} else {
 		return fleft + float64(rleft) - (fright + float64(rright))
 	}
+}
+
+// EllipsisString returns a truncated short string,
+// it appends '...' in the end of the length of string is too large.
+func EllipsisString(str string, length int) string {
+	if len(str) < length {
+		return str
+	}
+	return str[:length-3] + "..."
 }
 
 // StringsToInt64s converts a slice of string to a slice of int64.

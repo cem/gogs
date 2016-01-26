@@ -10,9 +10,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/gogits/git-module"
 	api "github.com/gogits/go-gogs-client"
-
-	"github.com/gogits/gogs/modules/git"
 )
 
 type SlackMeta struct {
@@ -33,8 +32,9 @@ type SlackPayload struct {
 }
 
 type SlackAttachment struct {
-	Color string `json:"color"`
-	Text  string `json:"text"`
+	Fallback string `json:"fallback"`
+	Color    string `json:"color"`
+	Text     string `json:"text"`
 }
 
 func (p *SlackPayload) SetSecret(_ string) {}
@@ -82,19 +82,19 @@ func getSlackPushPayload(p *api.PushPayload, slack *SlackMeta) (*SlackPayload, e
 	// n new commits
 	var (
 		branchName   = git.RefEndName(p.Ref)
+		commitDesc   string
 		commitString string
 	)
 
 	if len(p.Commits) == 1 {
-		commitString = "1 new commit"
-		if len(p.CompareUrl) > 0 {
-			commitString = SlackLinkFormatter(p.CompareUrl, commitString)
-		}
+		commitDesc = "1 new commit"
 	} else {
-		commitString = fmt.Sprintf("%d new commits", len(p.Commits))
-		if p.CompareUrl != "" {
-			commitString = SlackLinkFormatter(p.CompareUrl, commitString)
-		}
+		commitDesc = fmt.Sprintf("%d new commits", len(p.Commits))
+	}
+	if len(p.CompareUrl) > 0 {
+		commitString = SlackLinkFormatter(p.CompareUrl, commitDesc)
+	} else {
+		commitString = commitDesc
 	}
 
 	repoLink := SlackLinkFormatter(p.Repo.URL, p.Repo.Name)
@@ -111,7 +111,10 @@ func getSlackPushPayload(p *api.PushPayload, slack *SlackMeta) (*SlackPayload, e
 		}
 	}
 
-	slackAttachments := []SlackAttachment{{Color: slack.Color, Text: attachmentText}}
+	slackAttachments := []SlackAttachment{{
+		Color: slack.Color,
+		Text:  attachmentText,
+	}}
 
 	return &SlackPayload{
 		Channel:     slack.Channel,

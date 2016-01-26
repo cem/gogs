@@ -20,6 +20,7 @@ import (
 	_ "github.com/lib/pq"
 
 	"github.com/gogits/gogs/models/migrations"
+	"github.com/gogits/gogs/modules/log"
 	"github.com/gogits/gogs/modules/setting"
 )
 
@@ -52,6 +53,7 @@ func regulateTimeZone(t time.Time) time.Time {
 
 	zone := t.Local().Format("-0700")
 	if len(zone) != 5 {
+		log.Error(4, "Unprocessable timezone: %s - %s", t.Local(), zone)
 		return t
 	}
 	hour := com.StrTo(zone[2:3]).MustInt()
@@ -88,7 +90,7 @@ func init() {
 		new(Team), new(OrgUser), new(TeamUser), new(TeamRepo),
 		new(Notice), new(EmailAddress))
 
-	gonicNames := []string{"UID", "SSL"}
+	gonicNames := []string{"SSL"}
 	for _, name := range gonicNames {
 		core.LintGonicMapper[name] = true
 	}

@@ -5,47 +5,57 @@
 package admin
 
 import (
-	"math"
+	"github.com/Unknwon/paginater"
 
 	"github.com/gogits/gogs/models"
 	"github.com/gogits/gogs/modules/base"
+	"github.com/gogits/gogs/modules/log"
 	"github.com/gogits/gogs/modules/middleware"
+	"github.com/gogits/gogs/modules/setting"
 )
 
 const (
 	REPOS base.TplName = "admin/repo/list"
 )
 
-func pagination(ctx *middleware.Context, count int64, pageNum int) int {
-	p := ctx.QueryInt("p")
-	if p < 1 {
-		p = 1
-	}
-	curCount := int64((p-1)*pageNum + pageNum)
-	if curCount >= count {
-		p = int(math.Ceil(float64(count) / float64(pageNum)))
-	} else {
-		ctx.Data["NextPageNum"] = p + 1
-	}
-	if p > 1 {
-		ctx.Data["LastPageNum"] = p - 1
-	}
-	return p
-}
-
-func Repositories(ctx *middleware.Context) {
+func Repos(ctx *middleware.Context) {
 	ctx.Data["Title"] = ctx.Tr("admin.repositories")
 	ctx.Data["PageIsAdmin"] = true
 	ctx.Data["PageIsAdminRepositories"] = true
 
-	pageNum := 50
-	p := pagination(ctx, models.CountRepositories(), pageNum)
+	total := models.CountRepositories()
+	page := ctx.QueryInt("page")
+	if page <= 1 {
+		page = 1
+	}
+	ctx.Data["Page"] = paginater.New(int(total), setting.AdminRepoPagingNum, page, 5)
 
-	var err error
-	ctx.Data["Repos"], err = models.GetRepositoriesWithUsers(pageNum, (p-1)*pageNum)
+	repos, err := models.RepositoriesWithUsers(page, setting.AdminRepoPagingNum)
 	if err != nil {
-		ctx.Handle(500, "GetRepositoriesWithUsers", err)
+		ctx.Handle(500, "RepositoriesWithUsers", err)
 		return
 	}
+	ctx.Data["Repos"] = repos
+
+	ctx.Data["Total"] = total
 	ctx.HTML(200, REPOS)
+}
+
+func DeleteRepo(ctx *middleware.Context) {
+	repo, err := models.GetRepositoryByID(ctx.QueryInt64("id"))
+	if err != nil {
+		ctx.Handle(500, "GetRepositoryByID", err)
+		return
+	}
+
+	if err := models.DeleteRepository(repo.MustOwner().Id, repo.ID); err != nil {
+		ctx.Handle(500, "DeleteRepository", err)
+		return
+	}
+	log.Trace("Repository deleted: %s/%s", repo.MustOwner().Name, repo.Name)
+
+	ctx.Flash.Success(ctx.Tr("repo.settings.deletion_success"))
+	ctx.JSON(200, map[string]interface{}{
+		"redirect": setting.AppSubUrl + "/admin/repos?page=" + ctx.Query("page"),
+	})
 }

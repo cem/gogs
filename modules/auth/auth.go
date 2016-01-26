@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/Unknwon/com"
-	"github.com/Unknwon/macaron"
-	"github.com/macaron-contrib/binding"
-	"github.com/macaron-contrib/session"
+	"github.com/go-macaron/binding"
+	"github.com/go-macaron/session"
+	"gopkg.in/macaron.v1"
 
 	"github.com/gogits/gogs/models"
 	"github.com/gogits/gogs/modules/base"
@@ -56,8 +56,8 @@ func SignedInID(ctx *macaron.Context, sess session.Store) int64 {
 				return 0
 			}
 			t.Updated = time.Now()
-			if err = models.UpdateAccessToekn(t); err != nil {
-				log.Error(4, "UpdateAccessToekn: %v", err)
+			if err = models.UpdateAccessToken(t); err != nil {
+				log.Error(4, "UpdateAccessToken: %v", err)
 			}
 			return t.UID
 		}
@@ -215,7 +215,7 @@ func AssignForm(form interface{}, data map[string]interface{}) {
 	}
 }
 
-func getSize(field reflect.StructField, prefix string) string {
+func getRuleBody(field reflect.StructField, prefix string) string {
 	for _, rule := range strings.Split(field.Tag.Get("binding"), ";") {
 		if strings.HasPrefix(rule, prefix) {
 			return rule[len(prefix) : len(rule)-1]
@@ -225,15 +225,19 @@ func getSize(field reflect.StructField, prefix string) string {
 }
 
 func GetSize(field reflect.StructField) string {
-	return getSize(field, "Size(")
+	return getRuleBody(field, "Size(")
 }
 
 func GetMinSize(field reflect.StructField) string {
-	return getSize(field, "MinSize(")
+	return getRuleBody(field, "MinSize(")
 }
 
 func GetMaxSize(field reflect.StructField) string {
-	return getSize(field, "MaxSize(")
+	return getRuleBody(field, "MaxSize(")
+}
+
+func GetInclude(field reflect.StructField) string {
+	return getRuleBody(field, "Include(")
 }
 
 // FIXME: struct contains a struct
@@ -294,6 +298,8 @@ func validate(errs binding.Errors, data map[string]interface{}, f Form, l macaro
 				data["ErrorMsg"] = trName + l.Tr("form.email_error")
 			case binding.ERR_URL:
 				data["ErrorMsg"] = trName + l.Tr("form.url_error")
+			case binding.ERR_INCLUDE:
+				data["ErrorMsg"] = trName + l.Tr("form.include_error", GetInclude(field))
 			default:
 				data["ErrorMsg"] = l.Tr("form.unknown_error") + " " + errs[0].Classification
 			}

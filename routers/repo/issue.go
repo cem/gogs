@@ -41,6 +41,20 @@ var (
 	ErrTooManyFiles      = errors.New("Maximum number of files to upload exceeded")
 )
 
+func MustEnableIssues(ctx *middleware.Context) {
+	if !ctx.Repo.Repository.EnableIssues {
+		ctx.Handle(404, "MustEnableIssues", nil)
+	}
+}
+
+func MustEnablePulls(ctx *middleware.Context) {
+	if !ctx.Repo.Repository.EnablePulls {
+		ctx.Handle(404, "MustEnablePulls", nil)
+	}
+
+	ctx.Data["HasForkedRepo"] = ctx.IsSigned && ctx.User.HasForkedRepo(ctx.Repo.Repository.ID)
+}
+
 func RetrieveLabels(ctx *middleware.Context) {
 	labels, err := models.GetLabelsByRepoID(ctx.Repo.Repository.ID)
 	if err != nil {
@@ -57,9 +71,18 @@ func RetrieveLabels(ctx *middleware.Context) {
 func Issues(ctx *middleware.Context) {
 	isPullList := ctx.Params(":type") == "pulls"
 	if isPullList {
+		MustEnablePulls(ctx)
+		if ctx.Written() {
+			return
+		}
 		ctx.Data["Title"] = ctx.Tr("repo.pulls")
 		ctx.Data["PageIsPullList"] = true
+
 	} else {
+		MustEnableIssues(ctx)
+		if ctx.Written() {
+			return
+		}
 		ctx.Data["Title"] = ctx.Tr("repo.issues")
 		ctx.Data["PageIsIssueList"] = true
 	}
@@ -124,7 +147,8 @@ func Issues(ctx *middleware.Context) {
 	} else {
 		total = int(issueStats.ClosedCount)
 	}
-	ctx.Data["Page"] = paginater.New(total, setting.IssuePagingNum, page, 5)
+	pager := paginater.New(total, setting.IssuePagingNum, page, 5)
+	ctx.Data["Page"] = pager
 
 	// Get issues.
 	issues, err := models.Issues(&models.IssuesOptions{
@@ -133,7 +157,7 @@ func Issues(ctx *middleware.Context) {
 		RepoID:      repo.ID,
 		PosterID:    posterID,
 		MilestoneID: milestoneID,
-		Page:        page,
+		Page:        pager.Current(),
 		IsClosed:    isShowClosed,
 		IsMention:   filterMode == models.FM_MENTION,
 		IsPull:      isPullList,
@@ -324,6 +348,47 @@ func ValidateRepoMetas(ctx *middleware.Context, form auth.CreateIssueForm) ([]in
 	return labelIDs, milestoneID, assigneeID
 }
 
+func notifyWatchersAndMentions(ctx *middleware.Context, issue *models.Issue) {
+	// Update mentions
+	mentions := base.MentionPattern.FindAllString(issue.Content, -1)
+	if len(mentions) > 0 {
+		for i := range mentions {
+			mentions[i] = strings.TrimSpace(mentions[i])[1:]
+		}
+
+		if err := models.UpdateMentions(mentions, issue.ID); err != nil {
+			ctx.Handle(500, "UpdateMentions", err)
+			return
+		}
+	}
+
+	repo := ctx.Repo.Repository
+
+	// Mail watchers and mentions.
+	if setting.Service.EnableNotifyMail {
+		tos, err := mailer.SendIssueNotifyMail(ctx.User, ctx.Repo.Owner, repo, issue)
+		if err != nil {
+			ctx.Handle(500, "SendIssueNotifyMail", err)
+			return
+		}
+
+		tos = append(tos, ctx.User.LowerName)
+		newTos := make([]string, 0, len(mentions))
+		for _, m := range mentions {
+			if com.IsSliceContainsStr(tos, m) {
+				continue
+			}
+
+			newTos = append(newTos, m)
+		}
+		if err = mailer.SendIssueMentionMail(ctx.Render, ctx.User, ctx.Repo.Owner,
+			repo, issue, models.GetUserEmailsByNames(newTos)); err != nil {
+			ctx.Handle(500, "SendIssueMentionMail", err)
+			return
+		}
+	}
+}
+
 func NewIssuePost(ctx *middleware.Context, form auth.CreateIssueForm) {
 	ctx.Data["Title"] = ctx.Tr("repo.issues.new")
 	ctx.Data["PageIsIssueList"] = true
@@ -351,7 +416,7 @@ func NewIssuePost(ctx *middleware.Context, form auth.CreateIssueForm) {
 	issue := &models.Issue{
 		RepoID:      ctx.Repo.Repository.ID,
 		Index:       repo.NextIssueIndex(),
-		Name:        form.Title,
+		Name:        strings.TrimSpace(form.Title),
 		PosterID:    ctx.User.Id,
 		Poster:      ctx.User,
 		MilestoneID: milestoneID,
@@ -363,41 +428,9 @@ func NewIssuePost(ctx *middleware.Context, form auth.CreateIssueForm) {
 		return
 	}
 
-	// Update mentions.
-	mentions := base.MentionPattern.FindAllString(issue.Content, -1)
-	if len(mentions) > 0 {
-		for i := range mentions {
-			mentions[i] = strings.TrimSpace(mentions[i])[1:]
-		}
-
-		if err := models.UpdateMentions(mentions, issue.ID); err != nil {
-			ctx.Handle(500, "UpdateMentions", err)
-			return
-		}
-	}
-
-	// Mail watchers and mentions.
-	if setting.Service.EnableNotifyMail {
-		tos, err := mailer.SendIssueNotifyMail(ctx.User, ctx.Repo.Owner, repo, issue)
-		if err != nil {
-			ctx.Handle(500, "SendIssueNotifyMail", err)
-			return
-		}
-
-		tos = append(tos, ctx.User.LowerName)
-		newTos := make([]string, 0, len(mentions))
-		for _, m := range mentions {
-			if com.IsSliceContainsStr(tos, m) {
-				continue
-			}
-
-			newTos = append(newTos, m)
-		}
-		if err = mailer.SendIssueMentionMail(ctx.Render, ctx.User, ctx.Repo.Owner,
-			repo, issue, models.GetUserEmailsByNames(newTos)); err != nil {
-			ctx.Handle(500, "SendIssueMentionMail", err)
-			return
-		}
+	notifyWatchersAndMentions(ctx, issue)
+	if ctx.Written() {
+		return
 	}
 
 	log.Trace("Issue created: %d/%d", repo.ID, issue.ID)
@@ -476,9 +509,19 @@ func ViewIssue(ctx *middleware.Context) {
 	}
 
 	if issue.IsPull {
+		if err = issue.GetPullRequest(); err != nil {
+			ctx.Handle(500, "GetPullRequest", err)
+			return
+		}
+
 		ctx.Data["PageIsPullList"] = true
 		ctx.Data["PageIsPullConversation"] = true
+		ctx.Data["HasForkedRepo"] = ctx.IsSigned && ctx.User.HasForkedRepo(ctx.Repo.Repository.ID)
 	} else {
+		MustEnableIssues(ctx)
+		if ctx.Written() {
+			return
+		}
 		ctx.Data["PageIsIssueList"] = true
 	}
 
@@ -486,7 +529,8 @@ func ViewIssue(ctx *middleware.Context) {
 		ctx.Handle(500, "GetPoster", err)
 		return
 	}
-	issue.RenderedContent = string(base.RenderMarkdown([]byte(issue.Content), ctx.Repo.RepoLink))
+	issue.RenderedContent = string(base.RenderMarkdown([]byte(issue.Content), ctx.Repo.RepoLink,
+		ctx.Repo.Repository.ComposeMetas()))
 
 	repo := ctx.Repo.Repository
 
@@ -553,7 +597,8 @@ func ViewIssue(ctx *middleware.Context) {
 	// Render comments.
 	for _, comment = range issue.Comments {
 		if comment.Type == models.COMMENT_TYPE_COMMENT {
-			comment.RenderedContent = string(base.RenderMarkdown([]byte(comment.Content), ctx.Repo.RepoLink))
+			comment.RenderedContent = string(base.RenderMarkdown([]byte(comment.Content), ctx.Repo.RepoLink,
+				ctx.Repo.Repository.ComposeMetas()))
 
 			// Check tag.
 			tag, ok = marked[comment.PosterID]
@@ -605,7 +650,7 @@ func UpdateIssueTitle(ctx *middleware.Context) {
 		return
 	}
 
-	issue.Name = ctx.Query("title")
+	issue.Name = ctx.QueryTrim("title")
 	if len(issue.Name) == 0 {
 		ctx.Error(204)
 		return
@@ -639,7 +684,7 @@ func UpdateIssueContent(ctx *middleware.Context) {
 	}
 
 	ctx.JSON(200, map[string]interface{}{
-		"content": string(base.RenderMarkdown([]byte(issue.Content), ctx.Query("context"))),
+		"content": string(base.RenderMarkdown([]byte(issue.Content), ctx.Query("context"), ctx.Repo.Repository.ComposeMetas())),
 	})
 }
 
@@ -747,6 +792,12 @@ func NewComment(ctx *middleware.Context, form auth.CreateCommentForm) {
 		}
 		return
 	}
+	if issue.IsPull {
+		if err = issue.GetPullRequest(); err != nil {
+			ctx.Handle(500, "GetPullRequest", err)
+			return
+		}
+	}
 
 	var attachments []string
 	if setting.AttachmentEnabled {
@@ -759,72 +810,83 @@ func NewComment(ctx *middleware.Context, form auth.CreateCommentForm) {
 		return
 	}
 
+	var comment *models.Comment
 	defer func() {
-		// Check if issue owner/poster changes the status of issue.
-		if (ctx.Repo.IsOwner() || (ctx.IsSigned && issue.IsPoster(ctx.User.Id))) &&
+		// Check if issue admin/poster changes the status of issue.
+		if (ctx.Repo.IsAdmin() || (ctx.IsSigned && issue.IsPoster(ctx.User.Id))) &&
 			(form.Status == "reopen" || form.Status == "close") &&
 			!(issue.IsPull && issue.HasMerged) {
-			issue.Repo = ctx.Repo.Repository
-			if err = issue.ChangeStatus(ctx.User, form.Status == "close"); err != nil {
-				log.Error(4, "ChangeStatus: %v", err)
-			} else {
-				log.Trace("Issue[%d] status changed: %v", issue.ID, !issue.IsClosed)
+
+			// Duplication and conflict check should apply to reopen pull request.
+			var pr *models.PullRequest
+
+			if form.Status == "reopen" && issue.IsPull {
+				pull := issue.PullRequest
+				pr, err = models.GetUnmergedPullRequest(pull.HeadRepoID, pull.BaseRepoID, pull.HeadBranch, pull.BaseBranch)
+				if err != nil {
+					if !models.IsErrPullRequestNotExist(err) {
+						ctx.Handle(500, "GetUnmergedPullRequest", err)
+						return
+					}
+				}
+
+				// Regenerate patch and test conflict.
+				if pr == nil {
+					if err = issue.UpdatePatch(); err != nil {
+						ctx.Handle(500, "UpdatePatch", err)
+						return
+					}
+
+					issue.AddToTaskQueue()
+				}
 			}
+
+			if pr != nil {
+				ctx.Flash.Info(ctx.Tr("repo.pulls.open_unmerged_pull_exists", pr.Index))
+			} else {
+				issue.Repo = ctx.Repo.Repository
+				if err = issue.ChangeStatus(ctx.User, form.Status == "close"); err != nil {
+					log.Error(4, "ChangeStatus: %v", err)
+				} else {
+					log.Trace("Issue[%d] status changed to closed: %v", issue.ID, issue.IsClosed)
+				}
+			}
+		}
+
+		// Redirect to comment hashtag if there is any actual content.
+		typeName := "issues"
+		if issue.IsPull {
+			typeName = "pulls"
+		}
+		if comment != nil {
+			ctx.Redirect(fmt.Sprintf("%s/%s/%d#%s", ctx.Repo.RepoLink, typeName, issue.Index, comment.HashTag()))
+		} else {
+			ctx.Redirect(fmt.Sprintf("%s/%s/%d", ctx.Repo.RepoLink, typeName, issue.Index))
 		}
 	}()
 
 	// Fix #321: Allow empty comments, as long as we have attachments.
 	if len(form.Content) == 0 && len(attachments) == 0 {
-		ctx.Redirect(fmt.Sprintf("%s/issues/%d", ctx.Repo.RepoLink, issue.Index))
 		return
 	}
 
-	comment, err := models.CreateIssueComment(ctx.User, ctx.Repo.Repository, issue, form.Content, attachments)
+	comment, err = models.CreateIssueComment(ctx.User, ctx.Repo.Repository, issue, form.Content, attachments)
 	if err != nil {
 		ctx.Handle(500, "CreateIssueComment", err)
 		return
 	}
 
-	// Update mentions.
-	mentions := base.MentionPattern.FindAllString(comment.Content, -1)
-	if len(mentions) > 0 {
-		for i := range mentions {
-			mentions[i] = mentions[i][1:]
-		}
-
-		if err := models.UpdateMentions(mentions, issue.ID); err != nil {
-			ctx.Handle(500, "UpdateMentions", err)
-			return
-		}
+	notifyWatchersAndMentions(ctx, &models.Issue{
+		ID:      issue.ID,
+		Index:   issue.Index,
+		Name:    issue.Name,
+		Content: form.Content,
+	})
+	if ctx.Written() {
+		return
 	}
 
-	// Mail watchers and mentions.
-	if setting.Service.EnableNotifyMail {
-		issue.Content = form.Content
-		tos, err := mailer.SendIssueNotifyMail(ctx.User, ctx.Repo.Owner, ctx.Repo.Repository, issue)
-		if err != nil {
-			ctx.Handle(500, "SendIssueNotifyMail", err)
-			return
-		}
-
-		tos = append(tos, ctx.User.LowerName)
-		newTos := make([]string, 0, len(mentions))
-		for _, m := range mentions {
-			if com.IsSliceContainsStr(tos, m) {
-				continue
-			}
-
-			newTos = append(newTos, m)
-		}
-		if err = mailer.SendIssueMentionMail(ctx.Render, ctx.User, ctx.Repo.Owner,
-			ctx.Repo.Repository, issue, models.GetUserEmailsByNames(newTos)); err != nil {
-			ctx.Handle(500, "SendIssueMentionMail", err)
-			return
-		}
-	}
 	log.Trace("Comment created: %d/%d/%d", ctx.Repo.Repository.ID, issue.ID, comment.ID)
-
-	ctx.Redirect(fmt.Sprintf("%s/issues/%d#%s", ctx.Repo.RepoLink, issue.Index, comment.HashTag()))
 }
 
 func UpdateCommentContent(ctx *middleware.Context) {
@@ -859,12 +921,13 @@ func UpdateCommentContent(ctx *middleware.Context) {
 	}
 
 	ctx.JSON(200, map[string]interface{}{
-		"content": string(base.RenderMarkdown([]byte(comment.Content), ctx.Query("context"))),
+		"content": string(base.RenderMarkdown([]byte(comment.Content), ctx.Query("context"), ctx.Repo.Repository.ComposeMetas())),
 	})
 }
 
 func Labels(ctx *middleware.Context) {
 	ctx.Data["Title"] = ctx.Tr("repo.labels")
+	ctx.Data["PageIsIssueList"] = true
 	ctx.Data["PageIsLabels"] = true
 	ctx.Data["RequireMinicolors"] = true
 	ctx.HTML(200, LABELS)
@@ -929,6 +992,7 @@ func DeleteLabel(ctx *middleware.Context) {
 
 func Milestones(ctx *middleware.Context) {
 	ctx.Data["Title"] = ctx.Tr("repo.milestones")
+	ctx.Data["PageIsIssueList"] = true
 	ctx.Data["PageIsMilestones"] = true
 
 	isShowClosed := ctx.Query("state") == "closed"
@@ -955,7 +1019,7 @@ func Milestones(ctx *middleware.Context) {
 		return
 	}
 	for _, m := range miles {
-		m.RenderedContent = string(base.RenderMarkdown([]byte(m.Content), ctx.Repo.RepoLink))
+		m.RenderedContent = string(base.RenderMarkdown([]byte(m.Content), ctx.Repo.RepoLink, ctx.Repo.Repository.ComposeMetas()))
 		m.CalOpenIssues()
 	}
 	ctx.Data["Milestones"] = miles
@@ -972,6 +1036,7 @@ func Milestones(ctx *middleware.Context) {
 
 func NewMilestone(ctx *middleware.Context) {
 	ctx.Data["Title"] = ctx.Tr("repo.milestones.new")
+	ctx.Data["PageIsIssueList"] = true
 	ctx.Data["PageIsMilestones"] = true
 	ctx.Data["RequireDatetimepicker"] = true
 	ctx.Data["DateLang"] = setting.DateLang(ctx.Locale.Language())
@@ -980,6 +1045,7 @@ func NewMilestone(ctx *middleware.Context) {
 
 func NewMilestonePost(ctx *middleware.Context, form auth.CreateMilestoneForm) {
 	ctx.Data["Title"] = ctx.Tr("repo.milestones.new")
+	ctx.Data["PageIsIssueList"] = true
 	ctx.Data["PageIsMilestones"] = true
 	ctx.Data["RequireDatetimepicker"] = true
 	ctx.Data["DateLang"] = setting.DateLang(ctx.Locale.Language())

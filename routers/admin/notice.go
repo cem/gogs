@@ -6,11 +6,13 @@ package admin
 
 import (
 	"github.com/Unknwon/com"
+	"github.com/Unknwon/paginater"
 
 	"github.com/gogits/gogs/models"
 	"github.com/gogits/gogs/modules/base"
 	"github.com/gogits/gogs/modules/log"
 	"github.com/gogits/gogs/modules/middleware"
+	"github.com/gogits/gogs/modules/setting"
 )
 
 const (
@@ -22,25 +24,50 @@ func Notices(ctx *middleware.Context) {
 	ctx.Data["PageIsAdmin"] = true
 	ctx.Data["PageIsAdminNotices"] = true
 
-	pageNum := 50
-	p := pagination(ctx, models.CountNotices(), pageNum)
+	total := models.CountNotices()
+	page := ctx.QueryInt("page")
+	if page <= 1 {
+		page = 1
+	}
+	ctx.Data["Page"] = paginater.New(int(total), setting.AdminNoticePagingNum, page, 5)
 
-	notices, err := models.GetNotices(pageNum, (p-1)*pageNum)
+	notices, err := models.Notices(page, setting.AdminNoticePagingNum)
 	if err != nil {
-		ctx.Handle(500, "GetNotices", err)
+		ctx.Handle(500, "Notices", err)
 		return
 	}
 	ctx.Data["Notices"] = notices
+
+	ctx.Data["Total"] = total
 	ctx.HTML(200, NOTICES)
 }
 
-func DeleteNotice(ctx *middleware.Context) {
-	id := com.StrTo(ctx.Params(":id")).MustInt64()
-	if err := models.DeleteNotice(id); err != nil {
-		ctx.Handle(500, "DeleteNotice", err)
+func DeleteNotices(ctx *middleware.Context) {
+	strs := ctx.QueryStrings("ids[]")
+	ids := make([]int64, 0, len(strs))
+	for i := range strs {
+		id := com.StrTo(strs[i]).MustInt64()
+		if id > 0 {
+			ids = append(ids, id)
+		}
+	}
+
+	if err := models.DeleteNoticesByIDs(ids); err != nil {
+		ctx.Flash.Error("DeleteNoticesByIDs: " + err.Error())
+		ctx.Status(500)
+	} else {
+		ctx.Flash.Success(ctx.Tr("admin.notices.delete_success"))
+		ctx.Status(200)
+	}
+}
+
+func EmptyNotices(ctx *middleware.Context) {
+	if err := models.DeleteNotices(0, 0); err != nil {
+		ctx.Handle(500, "DeleteNotices", err)
 		return
 	}
-	log.Trace("System notice deleted by admin(%s): %d", ctx.User.Name, id)
+
+	log.Trace("System notices deleted by admin (%s): [start: %d]", ctx.User.Name, 0)
 	ctx.Flash.Success(ctx.Tr("admin.notices.delete_success"))
-	ctx.Redirect("/admin/notices")
+	ctx.Redirect(setting.AppSubUrl + "/admin/notices")
 }

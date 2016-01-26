@@ -8,12 +8,12 @@ import (
 	"container/list"
 	"path"
 
-	"github.com/Unknwon/com"
 	"github.com/Unknwon/paginater"
+
+	"github.com/gogits/git-module"
 
 	"github.com/gogits/gogs/models"
 	"github.com/gogits/gogs/modules/base"
-	"github.com/gogits/gogs/modules/git"
 	"github.com/gogits/gogs/modules/middleware"
 	"github.com/gogits/gogs/modules/setting"
 )
@@ -38,7 +38,6 @@ func RenderIssueLinks(oldCommits *list.List, repoLink string) *list.List {
 	newCommits := list.New()
 	for e := oldCommits.Front(); e != nil; e = e.Next() {
 		c := e.Value.(*git.Commit)
-		c.CommitMessage = c.CommitMessage
 		newCommits.PushBack(c)
 	}
 	return newCommits
@@ -46,18 +45,6 @@ func RenderIssueLinks(oldCommits *list.List, repoLink string) *list.List {
 
 func Commits(ctx *middleware.Context) {
 	ctx.Data["PageIsCommits"] = true
-
-	userName := ctx.Repo.Owner.Name
-	repoName := ctx.Repo.Repository.Name
-
-	brs, err := ctx.Repo.GitRepo.GetBranches()
-	if err != nil {
-		ctx.Handle(500, "GetBranches", err)
-		return
-	} else if len(brs) == 0 {
-		ctx.Handle(404, "GetBranches", nil)
-		return
-	}
 
 	commitsCount, err := ctx.Repo.Commit.CommitsCount()
 	if err != nil {
@@ -69,7 +56,7 @@ func Commits(ctx *middleware.Context) {
 	if page <= 1 {
 		page = 1
 	}
-	ctx.Data["Page"] = paginater.New(commitsCount, git.CommitsRangeSize, page, 5)
+	ctx.Data["Page"] = paginater.New(int(commitsCount), git.CommitsRangeSize, page, 5)
 
 	// Both `git log branchName` and `git log commitId` work.
 	commits, err := ctx.Repo.Commit.CommitsByRange(page)
@@ -79,11 +66,12 @@ func Commits(ctx *middleware.Context) {
 	}
 	commits = RenderIssueLinks(commits, ctx.Repo.RepoLink)
 	commits = models.ValidateCommitsWithEmails(commits)
-
 	ctx.Data["Commits"] = commits
-	ctx.Data["Username"] = userName
-	ctx.Data["Reponame"] = repoName
+
+	ctx.Data["Username"] = ctx.Repo.Owner.Name
+	ctx.Data["Reponame"] = ctx.Repo.Repository.Name
 	ctx.Data["CommitCount"] = commitsCount
+	ctx.Data["Branch"] = ctx.Repo.BranchName
 	ctx.HTML(200, COMMITS)
 }
 
@@ -96,18 +84,6 @@ func SearchCommits(ctx *middleware.Context) {
 		return
 	}
 
-	userName := ctx.Params(":username")
-	repoName := ctx.Params(":reponame")
-
-	brs, err := ctx.Repo.GitRepo.GetBranches()
-	if err != nil {
-		ctx.Handle(500, "GetBranches", err)
-		return
-	} else if len(brs) == 0 {
-		ctx.Handle(404, "GetBranches", nil)
-		return
-	}
-
 	commits, err := ctx.Repo.Commit.SearchCommits(keyword)
 	if err != nil {
 		ctx.Handle(500, "SearchCommits", err)
@@ -115,12 +91,13 @@ func SearchCommits(ctx *middleware.Context) {
 	}
 	commits = RenderIssueLinks(commits, ctx.Repo.RepoLink)
 	commits = models.ValidateCommitsWithEmails(commits)
+	ctx.Data["Commits"] = commits
 
 	ctx.Data["Keyword"] = keyword
-	ctx.Data["Username"] = userName
-	ctx.Data["Reponame"] = repoName
+	ctx.Data["Username"] = ctx.Repo.Owner.Name
+	ctx.Data["Reponame"] = ctx.Repo.Repository.Name
 	ctx.Data["CommitCount"] = commits.Len()
-	ctx.Data["Commits"] = commits
+	ctx.Data["Branch"] = ctx.Repo.BranchName
 	ctx.HTML(200, COMMITS)
 }
 
@@ -133,58 +110,36 @@ func FileHistory(ctx *middleware.Context) {
 		return
 	}
 
-	userName := ctx.Repo.Owner.Name
-	repoName := ctx.Repo.Repository.Name
 	branchName := ctx.Repo.BranchName
-
-	brs, err := ctx.Repo.GitRepo.GetBranches()
-	if err != nil {
-		ctx.Handle(500, "GetBranches", err)
-		return
-	} else if len(brs) == 0 {
-		ctx.Handle(404, "GetBranches", nil)
-		return
-	}
-
 	commitsCount, err := ctx.Repo.GitRepo.FileCommitsCount(branchName, fileName)
 	if err != nil {
-		ctx.Handle(500, "repo.FileHistory(GetCommitsCount)", err)
+		ctx.Handle(500, "FileCommitsCount", err)
 		return
 	} else if commitsCount == 0 {
-		ctx.Handle(404, "repo.FileHistory", nil)
+		ctx.Handle(404, "FileCommitsCount", nil)
 		return
 	}
 
-	// Calculate and validate page number.
-	page := com.StrTo(ctx.Query("p")).MustInt()
-	if page < 1 {
+	page := ctx.QueryInt("page")
+	if page <= 1 {
 		page = 1
 	}
-	lastPage := page - 1
-	if lastPage < 0 {
-		lastPage = 0
-	}
-	nextPage := page + 1
-	if nextPage*50 > commitsCount {
-		nextPage = 0
-	}
+	ctx.Data["Page"] = paginater.New(int(commitsCount), git.CommitsRangeSize, page, 5)
 
-	commits, err := ctx.Repo.GitRepo.CommitsByFileAndRange(
-		branchName, fileName, page)
+	commits, err := ctx.Repo.GitRepo.CommitsByFileAndRange(branchName, fileName, page)
 	if err != nil {
-		ctx.Handle(500, "repo.FileHistory(CommitsByRange)", err)
+		ctx.Handle(500, "CommitsByFileAndRange", err)
 		return
 	}
 	commits = RenderIssueLinks(commits, ctx.Repo.RepoLink)
 	commits = models.ValidateCommitsWithEmails(commits)
-
 	ctx.Data["Commits"] = commits
-	ctx.Data["Username"] = userName
-	ctx.Data["Reponame"] = repoName
+
+	ctx.Data["Username"] = ctx.Repo.Owner.Name
+	ctx.Data["Reponame"] = ctx.Repo.Repository.Name
 	ctx.Data["FileName"] = fileName
 	ctx.Data["CommitCount"] = commitsCount
-	ctx.Data["LastPageNum"] = lastPage
-	ctx.Data["NextPageNum"] = nextPage
+	ctx.Data["Branch"] = branchName
 	ctx.HTML(200, COMMITS)
 }
 
@@ -196,7 +151,6 @@ func Diff(ctx *middleware.Context) {
 	commitID := ctx.Repo.CommitID
 
 	commit := ctx.Repo.Commit
-	commit.CommitMessage = commit.CommitMessage
 	diff, err := models.GetDiffCommit(models.RepoPath(userName, repoName),
 		commitID, setting.Git.MaxGitDiffLines)
 	if err != nil {
@@ -206,7 +160,7 @@ func Diff(ctx *middleware.Context) {
 
 	parents := make([]string, commit.ParentCount())
 	for i := 0; i < commit.ParentCount(); i++ {
-		sha, err := commit.ParentId(i)
+		sha, err := commit.ParentID(i)
 		parents[i] = sha.String()
 		if err != nil {
 			ctx.Handle(404, "repo.Diff", err)
@@ -214,6 +168,13 @@ func Diff(ctx *middleware.Context) {
 		}
 	}
 
+	for _, diffFile := range diff.Files {
+		for _, diffSection := range diffFile.Sections {
+			diffSection.ComputeLinesDiff()
+		}
+	}
+
+	ctx.Data["IsSplitStyle"] = ctx.Query("style") == "split"
 	ctx.Data["Username"] = userName
 	ctx.Data["Reponame"] = repoName
 	ctx.Data["IsImageFile"] = commit.IsImageFile
@@ -259,6 +220,7 @@ func CompareDiff(ctx *middleware.Context) {
 	}
 	commits = models.ValidateCommitsWithEmails(commits)
 
+	ctx.Data["IsSplitStyle"] = ctx.Query("style") == "split"
 	ctx.Data["CommitRepoLink"] = ctx.Repo.RepoLink
 	ctx.Data["Commits"] = commits
 	ctx.Data["CommitCount"] = commits.Len()

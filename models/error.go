@@ -18,7 +18,7 @@ func IsErrNameReserved(err error) bool {
 }
 
 func (err ErrNameReserved) Error() string {
-	return fmt.Sprintf("name is reserved: [name: %s]", err.Name)
+	return fmt.Sprintf("name is reserved [name: %s]", err.Name)
 }
 
 type ErrNamePatternNotAllowed struct {
@@ -31,7 +31,7 @@ func IsErrNamePatternNotAllowed(err error) bool {
 }
 
 func (err ErrNamePatternNotAllowed) Error() string {
-	return fmt.Sprintf("name pattern is not allowed: [pattern: %s]", err.Pattern)
+	return fmt.Sprintf("name pattern is not allowed [pattern: %s]", err.Pattern)
 }
 
 //  ____ ___
@@ -51,7 +51,7 @@ func IsErrUserAlreadyExist(err error) bool {
 }
 
 func (err ErrUserAlreadyExist) Error() string {
-	return fmt.Sprintf("user already exists: [name: %s]", err.Name)
+	return fmt.Sprintf("user already exists [name: %s]", err.Name)
 }
 
 type ErrUserNotExist struct {
@@ -65,7 +65,7 @@ func IsErrUserNotExist(err error) bool {
 }
 
 func (err ErrUserNotExist) Error() string {
-	return fmt.Sprintf("user does not exist: [uid: %d, name: %s]", err.UID, err.Name)
+	return fmt.Sprintf("user does not exist [uid: %d, name: %s]", err.UID, err.Name)
 }
 
 type ErrSandstormUserNotExist struct {
@@ -92,7 +92,7 @@ func IsErrEmailAlreadyUsed(err error) bool {
 }
 
 func (err ErrEmailAlreadyUsed) Error() string {
-	return fmt.Sprintf("e-mail has been used: [email: %s]", err.Email)
+	return fmt.Sprintf("e-mail has been used [email: %s]", err.Email)
 }
 
 type ErrUserOwnRepos struct {
@@ -105,7 +105,7 @@ func IsErrUserOwnRepos(err error) bool {
 }
 
 func (err ErrUserOwnRepos) Error() string {
-	return fmt.Sprintf("user still has ownership of repositories: [uid: %d]", err.UID)
+	return fmt.Sprintf("user still has ownership of repositories [uid: %d]", err.UID)
 }
 
 type ErrUserHasOrgs struct {
@@ -118,7 +118,40 @@ func IsErrUserHasOrgs(err error) bool {
 }
 
 func (err ErrUserHasOrgs) Error() string {
-	return fmt.Sprintf("user still has membership of organizations: [uid: %d]", err.UID)
+	return fmt.Sprintf("user still has membership of organizations [uid: %d]", err.UID)
+}
+
+type ErrReachLimitOfRepo struct {
+	Limit int
+}
+
+func IsErrReachLimitOfRepo(err error) bool {
+	_, ok := err.(ErrReachLimitOfRepo)
+	return ok
+}
+
+func (err ErrReachLimitOfRepo) Error() string {
+	return fmt.Sprintf("user has reached maximum limit of repositories [limit: %d]", err.Limit)
+}
+
+//  __      __.__ __   .__
+// /  \    /  \__|  | _|__|
+// \   \/\/   /  |  |/ /  |
+//  \        /|  |    <|  |
+//   \__/\  / |__|__|_ \__|
+//        \/          \/
+
+type ErrWikiAlreadyExist struct {
+	Title string
+}
+
+func IsErrWikiAlreadyExist(err error) bool {
+	_, ok := err.(ErrWikiAlreadyExist)
+	return ok
+}
+
+func (err ErrWikiAlreadyExist) Error() string {
+	return fmt.Sprintf("wiki page already exists [title: %s]", err.Title)
 }
 
 // __________     ___.   .__  .__          ____  __.
@@ -127,6 +160,19 @@ func (err ErrUserHasOrgs) Error() string {
 //  |    |   |  |  / \_\ \  |_|  \  \___  |    |  \  ___/\___  |
 //  |____|   |____/|___  /____/__|\___  > |____|__ \___  > ____|
 //                     \/             \/          \/   \/\/
+
+type ErrKeyUnableVerify struct {
+	Result string
+}
+
+func IsErrKeyUnableVerify(err error) bool {
+	_, ok := err.(ErrKeyUnableVerify)
+	return ok
+}
+
+func (err ErrKeyUnableVerify) Error() string {
+	return fmt.Sprintf("Unable to verify key content [result: %s]", err.Result)
+}
 
 type ErrKeyNotExist struct {
 	ID int64
@@ -138,7 +184,7 @@ func IsErrKeyNotExist(err error) bool {
 }
 
 func (err ErrKeyNotExist) Error() string {
-	return fmt.Sprintf("public key does not exist: [id: %d]", err.ID)
+	return fmt.Sprintf("public key does not exist [id: %d]", err.ID)
 }
 
 type ErrKeyAlreadyExist struct {
@@ -152,7 +198,7 @@ func IsErrKeyAlreadyExist(err error) bool {
 }
 
 func (err ErrKeyAlreadyExist) Error() string {
-	return fmt.Sprintf("public key already exists: [owner_id: %d, content: %s]", err.OwnerID, err.Content)
+	return fmt.Sprintf("public key already exists [owner_id: %d, content: %s]", err.OwnerID, err.Content)
 }
 
 type ErrKeyNameAlreadyUsed struct {
@@ -166,7 +212,38 @@ func IsErrKeyNameAlreadyUsed(err error) bool {
 }
 
 func (err ErrKeyNameAlreadyUsed) Error() string {
-	return fmt.Sprintf("public key already exists: [owner_id: %d, name: %s]", err.OwnerID, err.Name)
+	return fmt.Sprintf("public key already exists [owner_id: %d, name: %s]", err.OwnerID, err.Name)
+}
+
+type ErrKeyAccessDenied struct {
+	UserID int64
+	KeyID  int64
+	Note   string
+}
+
+func IsErrKeyAccessDenied(err error) bool {
+	_, ok := err.(ErrKeyAccessDenied)
+	return ok
+}
+
+func (err ErrKeyAccessDenied) Error() string {
+	return fmt.Sprintf("user does not have access to the key [user_id: %d, key_id: %d, note: %s]",
+		err.UserID, err.KeyID, err.Note)
+}
+
+type ErrDeployKeyNotExist struct {
+	ID     int64
+	KeyID  int64
+	RepoID int64
+}
+
+func IsErrDeployKeyNotExist(err error) bool {
+	_, ok := err.(ErrDeployKeyNotExist)
+	return ok
+}
+
+func (err ErrDeployKeyNotExist) Error() string {
+	return fmt.Sprintf("Deploy key does not exist [id: %d, key_id: %d, repo_id: %d]", err.ID, err.KeyID, err.RepoID)
 }
 
 type ErrDeployKeyAlreadyExist struct {
@@ -180,7 +257,7 @@ func IsErrDeployKeyAlreadyExist(err error) bool {
 }
 
 func (err ErrDeployKeyAlreadyExist) Error() string {
-	return fmt.Sprintf("public key already exists: [key_id: %d, repo_id: %d]", err.KeyID, err.RepoID)
+	return fmt.Sprintf("public key already exists [key_id: %d, repo_id: %d]", err.KeyID, err.RepoID)
 }
 
 type ErrDeployKeyNameAlreadyUsed struct {
@@ -194,7 +271,7 @@ func IsErrDeployKeyNameAlreadyUsed(err error) bool {
 }
 
 func (err ErrDeployKeyNameAlreadyUsed) Error() string {
-	return fmt.Sprintf("public key already exists: [repo_id: %d, name: %s]", err.RepoID, err.Name)
+	return fmt.Sprintf("public key already exists [repo_id: %d, name: %s]", err.RepoID, err.Name)
 }
 
 //    _____                                   ___________     __
@@ -214,7 +291,7 @@ func IsErrAccessTokenNotExist(err error) bool {
 }
 
 func (err ErrAccessTokenNotExist) Error() string {
-	return fmt.Sprintf("access token does not exist: [sha: %s]", err.SHA)
+	return fmt.Sprintf("access token does not exist [sha: %s]", err.SHA)
 }
 
 // ________                            .__                __  .__
@@ -234,7 +311,7 @@ func IsErrLastOrgOwner(err error) bool {
 }
 
 func (err ErrLastOrgOwner) Error() string {
-	return fmt.Sprintf("user is the last member of owner team: [uid: %d]", err.UID)
+	return fmt.Sprintf("user is the last member of owner team [uid: %d]", err.UID)
 }
 
 // __________                           .__  __
@@ -271,6 +348,62 @@ func IsErrRepoAlreadyExist(err error) bool {
 
 func (err ErrRepoAlreadyExist) Error() string {
 	return fmt.Sprintf("repository already exists [uname: %s, name: %s]", err.Uname, err.Name)
+}
+
+type ErrInvalidCloneAddr struct {
+	IsURLError         bool
+	IsInvalidPath      bool
+	IsPermissionDenied bool
+}
+
+func IsErrInvalidCloneAddr(err error) bool {
+	_, ok := err.(ErrInvalidCloneAddr)
+	return ok
+}
+
+func (err ErrInvalidCloneAddr) Error() string {
+	return fmt.Sprintf("invalid clone address [is_url_error: %v, is_invalid_path: %v, is_permission_denied: %v]",
+		err.IsURLError, err.IsInvalidPath, err.IsPermissionDenied)
+}
+
+type ErrUpdateTaskNotExist struct {
+	UUID string
+}
+
+func IsErrUpdateTaskNotExist(err error) bool {
+	_, ok := err.(ErrUpdateTaskNotExist)
+	return ok
+}
+
+func (err ErrUpdateTaskNotExist) Error() string {
+	return fmt.Sprintf("update task does not exist [uuid: %s]", err.UUID)
+}
+
+type ErrReleaseAlreadyExist struct {
+	TagName string
+}
+
+func IsErrReleaseAlreadyExist(err error) bool {
+	_, ok := err.(ErrReleaseAlreadyExist)
+	return ok
+}
+
+func (err ErrReleaseAlreadyExist) Error() string {
+	return fmt.Sprintf("Release tag already exist [tag_name: %s]", err.TagName)
+}
+
+type ErrReleaseNotExist struct {
+	ID      int64
+	TagName string
+}
+
+func IsErrReleaseNotExist(err error) bool {
+	_, ok := err.(ErrReleaseNotExist)
+	return ok
+}
+
+func (err ErrReleaseNotExist) Error() string {
+	return fmt.Sprintf("Release tag does not exist [id: %d, tag_name: %s]", err.ID, err.TagName)
 }
 
 //  __      __      ___.   .__                   __
@@ -324,7 +457,7 @@ func (err ErrIssueNotExist) Error() string {
 
 type ErrPullRequestNotExist struct {
 	ID         int64
-	PullID     int64
+	IssueID    int64
 	HeadRepoID int64
 	BaseRepoID int64
 	HeadBarcnh string
@@ -337,8 +470,8 @@ func IsErrPullRequestNotExist(err error) bool {
 }
 
 func (err ErrPullRequestNotExist) Error() string {
-	return fmt.Sprintf("pull request does not exist [id: %d, pull_id: %d, head_repo_id: %d, base_repo_id: %d, head_branch: %s, base_branch: %s]",
-		err.ID, err.PullID, err.HeadRepoID, err.BaseRepoID, err.HeadBarcnh, err.BaseBranch)
+	return fmt.Sprintf("pull request does not exist [id: %d, issue_id: %d, head_repo_id: %d, base_repo_id: %d, head_branch: %s, base_branch: %s]",
+		err.ID, err.IssueID, err.HeadRepoID, err.BaseRepoID, err.HeadBarcnh, err.BaseBranch)
 }
 
 // _________                                       __
@@ -421,4 +554,24 @@ func IsErrAttachmentNotExist(err error) bool {
 
 func (err ErrAttachmentNotExist) Error() string {
 	return fmt.Sprintf("attachment does not exist [id: %d, uuid: %s]", err.ID, err.UUID)
+}
+
+//    _____          __  .__                   __  .__               __  .__
+//   /  _  \  __ ___/  |_|  |__   ____   _____/  |_|__| ____ _____ _/  |_|__| ____   ____
+//  /  /_\  \|  |  \   __\  |  \_/ __ \ /    \   __\  |/ ___\\__  \\   __\  |/  _ \ /    \
+// /    |    \  |  /|  | |   Y  \  ___/|   |  \  | |  \  \___ / __ \|  | |  (  <_> )   |  \
+// \____|__  /____/ |__| |___|  /\___  >___|  /__| |__|\___  >____  /__| |__|\____/|___|  /
+//         \/                 \/     \/     \/             \/     \/                    \/
+
+type ErrAuthenticationNotExist struct {
+	ID int64
+}
+
+func IsErrAuthenticationNotExist(err error) bool {
+	_, ok := err.(ErrAuthenticationNotExist)
+	return ok
+}
+
+func (err ErrAuthenticationNotExist) Error() string {
+	return fmt.Sprintf("Authentication does not exist [id: %d]", err.ID)
 }

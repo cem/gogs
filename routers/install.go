@@ -13,9 +13,11 @@ import (
 	"strings"
 
 	"github.com/Unknwon/com"
-	"github.com/Unknwon/macaron"
 	"github.com/go-xorm/xorm"
 	"gopkg.in/ini.v1"
+	"gopkg.in/macaron.v1"
+
+	"github.com/gogits/git-module"
 
 	"github.com/gogits/gogs/models"
 	"github.com/gogits/gogs/models/cron"
@@ -25,6 +27,8 @@ import (
 	"github.com/gogits/gogs/modules/mailer"
 	"github.com/gogits/gogs/modules/middleware"
 	"github.com/gogits/gogs/modules/setting"
+	"github.com/gogits/gogs/modules/ssh"
+	"github.com/gogits/gogs/modules/template"
 	"github.com/gogits/gogs/modules/user"
 )
 
@@ -38,6 +42,8 @@ func checkRunMode() {
 		macaron.Env = macaron.PROD
 		macaron.ColorLog = false
 		setting.ProdMode = true
+	default:
+		git.Debug = true
 	}
 	log.Info("Run Mode: %s", strings.Title(macaron.Env))
 }
@@ -50,6 +56,7 @@ func NewServices() {
 // GlobalInit is for global configuration reload-able.
 func GlobalInit() {
 	setting.NewContext()
+	template.NewContext()
 	log.Trace("Custom path: %s", setting.CustomPath)
 	log.Trace("Log path: %s", setting.LogRootPath)
 	models.LoadConfigs()
@@ -66,6 +73,7 @@ func GlobalInit() {
 		models.HasEngine = true
 		cron.NewContext()
 		models.InitDeliverHooks()
+		models.InitTestPullRequests()
 		log.NewGitLogger(path.Join(setting.LogRootPath, "http.log"))
 	}
 	if models.EnableSQLite3 {
@@ -74,7 +82,15 @@ func GlobalInit() {
 	if models.EnableTidb {
 		log.Info("TiDB Supported")
 	}
+	if setting.SupportMiniWinService {
+		log.Info("Builtin Windows Service Supported")
+	}
 	checkRunMode()
+
+	if setting.StartSSHServer {
+		ssh.Listen(setting.SSHPort)
+		log.Info("SSH server started on :%v", setting.SSHPort)
+	}
 }
 
 func InstallInit(ctx *middleware.Context) {
@@ -215,6 +231,7 @@ func InstallPost(ctx *middleware.Context, form auth.InstallForm) {
 	}
 
 	// Test repository root path.
+	form.RepoRootPath = strings.Replace(form.RepoRootPath, "\\", "/", -1)
 	if err := os.MkdirAll(form.RepoRootPath, os.ModePerm); err != nil {
 		ctx.Data["Err_RepoRootPath"] = true
 		ctx.RenderWithErr(ctx.Tr("install.invalid_repo_path", err), INSTALL, &form)
@@ -321,15 +338,16 @@ func InstallPost(ctx *middleware.Context, form auth.InstallForm) {
 
 	GlobalInit()
 
-	// Create admin account.
+	// Create admin account
 	if len(form.AdminName) > 0 {
-		if err := models.CreateUser(&models.User{
+		u := &models.User{
 			Name:     form.AdminName,
 			Email:    form.AdminEmail,
 			Passwd:   form.AdminPasswd,
 			IsAdmin:  true,
 			IsActive: true,
-		}); err != nil {
+		}
+		if err := models.CreateUser(u); err != nil {
 			if !models.IsErrUserAlreadyExist(err) {
 				setting.InstallLock = false
 				ctx.Data["Err_AdminName"] = true
@@ -338,7 +356,12 @@ func InstallPost(ctx *middleware.Context, form auth.InstallForm) {
 				return
 			}
 			log.Info("Admin account already exist")
+			u, _ = models.GetUserByName(u.Name)
 		}
+
+		// Auto-login for admin
+		ctx.Session.Set("uid", u.Id)
+		ctx.Session.Set("uname", u.Name)
 	}
 
 	log.Info("First-time run install finished!")

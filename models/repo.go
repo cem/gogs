@@ -17,16 +17,21 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/Unknwon/cae/zip"
 	"github.com/Unknwon/com"
 	"github.com/go-xorm/xorm"
+	"github.com/mcuadros/go-version"
+	"gopkg.in/ini.v1"
+
+	"github.com/gogits/git-module"
+	api "github.com/gogits/go-gogs-client"
 
 	"github.com/gogits/gogs/modules/base"
 	"github.com/gogits/gogs/modules/bindata"
-	"github.com/gogits/gogs/modules/git"
 	"github.com/gogits/gogs/modules/log"
 	"github.com/gogits/gogs/modules/process"
 	"github.com/gogits/gogs/modules/setting"
@@ -46,6 +51,9 @@ var (
 
 var (
 	Gitignores, Licenses, Readmes []string
+
+	// Maximum items per page in forks, watchers and stars of a repo
+	ItemsPerPage = 40
 )
 
 func LoadRepoConfig() {
@@ -90,16 +98,13 @@ func NewRepoContext() {
 	}
 
 	// Check Git version.
-	ver, err := git.GetVersion()
+	gitVer, err := git.BinVersion()
 	if err != nil {
 		log.Fatal(4, "Fail to get Git version: %v", err)
 	}
 
-	reqVer, err := git.ParseVersion("1.7.1")
-	if err != nil {
-		log.Fatal(4, "Fail to parse required Git version: %v", err)
-	}
-	if ver.LessThan(reqVer) {
+	log.Info("Git Version: %s", gitVer)
+	if version.Compare("1.7.1", gitVer, ">") {
 		log.Fatal(4, "Gogs requires Git version greater or equal to 1.7.1")
 	}
 
@@ -124,6 +129,8 @@ func NewRepoContext() {
 		log.Fatal(4, "Fail to execute 'git config --global core.quotepath false': %s", stderr)
 	}
 
+	// Clean up temporary data.
+	os.RemoveAll(filepath.Join(setting.AppDataPath, "tmp"))
 }
 
 // Repository represents a git repository.
@@ -157,6 +164,16 @@ type Repository struct {
 	IsMirror bool
 	*Mirror  `xorm:"-"`
 
+	// Advanced settings
+	EnableWiki            bool `xorm:"NOT NULL DEFAULT true"`
+	EnableExternalWiki    bool
+	ExternalWikiURL       string
+	EnableIssues          bool `xorm:"NOT NULL DEFAULT true"`
+	EnableExternalTracker bool
+	ExternalTrackerFormat string
+	ExternalMetas         map[string]string `xorm:"-"`
+	EnablePulls           bool              `xorm:"NOT NULL DEFAULT true"`
+
 	IsFork   bool `xorm:"NOT NULL DEFAULT false"`
 	ForkID   int64
 	BaseRepo *Repository `xorm:"-"`
@@ -179,14 +196,49 @@ func (repo *Repository) AfterSet(colName string, _ xorm.Cell) {
 }
 
 func (repo *Repository) getOwner(e Engine) (err error) {
-	if repo.Owner == nil {
-		repo.Owner, err = getUserByID(e, repo.OwnerID)
+	if repo.Owner != nil {
+		return nil
 	}
+
+	repo.Owner, err = getUserByID(e, repo.OwnerID)
 	return err
 }
 
 func (repo *Repository) GetOwner() error {
 	return repo.getOwner(x)
+}
+
+func (repo *Repository) mustOwner(e Engine) *User {
+	if err := repo.getOwner(e); err != nil {
+		return &User{
+			Name:     "error",
+			FullName: err.Error(),
+		}
+	}
+
+	return repo.Owner
+}
+
+// MustOwner always returns a valid *User object to avoid
+// conceptually impossible error handling.
+// It creates a fake object that contains error deftail
+// when error occurs.
+func (repo *Repository) MustOwner() *User {
+	return repo.mustOwner(x)
+}
+
+// ComposeMetas composes a map of metas for rendering external issue tracker URL.
+func (repo *Repository) ComposeMetas() map[string]string {
+	if !repo.EnableExternalTracker {
+		return nil
+	} else if repo.ExternalMetas == nil {
+		repo.ExternalMetas = map[string]string{
+			"format": repo.ExternalTrackerFormat,
+			"user":   repo.MustOwner().Name,
+			"repo":   repo.Name,
+		}
+	}
+	return repo.ExternalMetas
 }
 
 // GetAssignees returns all users that have write access of repository.
@@ -245,22 +297,28 @@ func (repo *Repository) GetBaseRepo() (err error) {
 	return err
 }
 
-func (repo *Repository) repoPath(e Engine) (string, error) {
-	if err := repo.getOwner(e); err != nil {
-		return "", err
-	}
-	return RepoPath(repo.Owner.Name, repo.Name), nil
+func (repo *Repository) repoPath(e Engine) string {
+	return RepoPath(repo.mustOwner(e).Name, repo.Name)
 }
 
-func (repo *Repository) RepoPath() (string, error) {
+func (repo *Repository) RepoPath() string {
 	return repo.repoPath(x)
 }
 
-func (repo *Repository) RepoLink() (string, error) {
-	if err := repo.GetOwner(); err != nil {
-		return "", err
-	}
-	return setting.AppSubUrl + "/" + repo.Owner.Name + "/" + repo.Name, nil
+func (repo *Repository) GitConfigPath() string {
+	return filepath.Join(repo.RepoPath(), "config")
+}
+
+func (repo *Repository) RepoLink() string {
+	return setting.AppSubUrl + "/" + repo.MustOwner().Name + "/" + repo.Name
+}
+
+func (repo *Repository) ComposeCompareURL(oldCommitID, newCommitID string) string {
+	return fmt.Sprintf("%s/%s/compare/%s...%s", repo.MustOwner().Name, repo.Name, oldCommitID, newCommitID)
+}
+
+func (repo *Repository) FullRepoLink() string {
+	return setting.AppUrl + repo.MustOwner().Name + "/" + repo.Name
 }
 
 func (repo *Repository) HasAccess(u *User) bool {
@@ -293,6 +351,73 @@ func (repo *Repository) DescriptionHtml() template.HTML {
 	return template.HTML(DescPattern.ReplaceAllStringFunc(base.Sanitizer.Sanitize(repo.Description), sanitize))
 }
 
+func (repo *Repository) LocalCopyPath() string {
+	return path.Join(setting.AppDataPath, "tmp/local", com.ToStr(repo.ID))
+}
+
+func updateLocalCopy(repoPath, localPath string) error {
+	if !com.IsExist(localPath) {
+		if err := git.Clone(repoPath, localPath, git.CloneRepoOptions{}); err != nil {
+			return fmt.Errorf("Clone: %v", err)
+		}
+	} else {
+		if err := git.Pull(localPath, true); err != nil {
+			return fmt.Errorf("Pull: %v", err)
+		}
+	}
+	return nil
+}
+
+// UpdateLocalCopy makes sure the local copy of repository is up-to-date.
+func (repo *Repository) UpdateLocalCopy() error {
+	return updateLocalCopy(repo.RepoPath(), repo.LocalCopyPath())
+}
+
+// PatchPath returns corresponding patch file path of repository by given issue ID.
+func (repo *Repository) PatchPath(index int64) (string, error) {
+	if err := repo.GetOwner(); err != nil {
+		return "", err
+	}
+
+	return filepath.Join(RepoPath(repo.Owner.Name, repo.Name), "pulls", com.ToStr(index)+".patch"), nil
+}
+
+// SavePatch saves patch data to corresponding location by given issue ID.
+func (repo *Repository) SavePatch(index int64, patch []byte) error {
+	patchPath, err := repo.PatchPath(index)
+	if err != nil {
+		return fmt.Errorf("PatchPath: %v", err)
+	}
+
+	os.MkdirAll(filepath.Dir(patchPath), os.ModePerm)
+	if err = ioutil.WriteFile(patchPath, patch, 0644); err != nil {
+		return fmt.Errorf("WriteFile: %v", err)
+	}
+
+	return nil
+}
+
+// ComposePayload composes and returns *api.PayloadRepo corresponding to the repository.
+func (repo *Repository) ComposePayload() *api.PayloadRepo {
+	cl := repo.CloneLink()
+	return &api.PayloadRepo{
+		ID:          repo.ID,
+		Name:        repo.Name,
+		URL:         repo.FullRepoLink(),
+		SSHURL:      cl.SSH,
+		CloneURL:    cl.HTTPS,
+		Description: repo.Description,
+		Website:     repo.Website,
+		Watchers:    repo.NumWatches,
+		Owner: &api.PayloadAuthor{
+			Name:     repo.MustOwner().DisplayName(),
+			Email:    repo.MustOwner().Email,
+			UserName: repo.MustOwner().Name,
+		},
+		Private: repo.IsPrivate,
+	}
+}
+
 func isRepositoryExist(e Engine, u *User, repoName string) (bool, error) {
 	has, err := e.Get(&Repository{
 		OwnerID:   u.Id,
@@ -313,24 +438,31 @@ type CloneLink struct {
 	Git   string
 }
 
-// CloneLink returns clone URLs of repository.
-func (repo *Repository) CloneLink() (cl CloneLink, err error) {
-	if err = repo.GetOwner(); err != nil {
-		return cl, err
+func (repo *Repository) cloneLink(isWiki bool) *CloneLink {
+	repoName := repo.Name
+	if isWiki {
+		repoName += ".wiki"
 	}
 
+	repo.Owner = repo.MustOwner()
+	cl := new(CloneLink)
 	if setting.SSHPort != 22 {
-		cl.SSH = fmt.Sprintf("ssh://%s@%s:%d/%s/%s.git", setting.RunUser, setting.SSHDomain, setting.SSHPort, repo.Owner.LowerName, repo.LowerName)
+		cl.SSH = fmt.Sprintf("ssh://%s@%s:%d/%s/%s.git", setting.RunUser, setting.SSHDomain, setting.SSHPort, repo.Owner.Name, repoName)
 	} else {
-		cl.SSH = fmt.Sprintf("%s@%s:%s/%s.git", setting.RunUser, setting.SSHDomain, repo.Owner.LowerName, repo.LowerName)
+		cl.SSH = fmt.Sprintf("%s@%s:%s/%s.git", setting.RunUser, setting.SSHDomain, repo.Owner.Name, repoName)
 	}
-	cl.HTTPS = fmt.Sprintf("%s%s/%s.git", setting.AppUrl, repo.Owner.LowerName, repo.LowerName)
-	return cl, nil
+	cl.HTTPS = fmt.Sprintf("%s%s/%s.git", setting.AppUrl, repo.Owner.Name, repoName)
+	return cl
+}
+
+// CloneLink returns clone URLs of repository.
+func (repo *Repository) CloneLink() (cl *CloneLink) {
+	return repo.cloneLink(false)
 }
 
 var (
 	reservedNames    = []string{"debug", "raw", "install", "api", "avatar", "user", "org", "help", "stars", "issues", "pulls", "commits", "repo", "template", "admin", "new"}
-	reservedPatterns = []string{"*.git", "*.keys"}
+	reservedPatterns = []string{"*.git", "*.keys", "*.wiki"}
 )
 
 // IsUsableName checks if name is reserved or pattern of name is not allowed.
@@ -364,6 +496,8 @@ type Mirror struct {
 	Interval   int         // Hour.
 	Updated    time.Time   `xorm:"UPDATED"`
 	NextUpdate time.Time
+
+	address string `xorm:"-"`
 }
 
 func (m *Mirror) AfterSet(colName string, _ xorm.Cell) {
@@ -375,6 +509,61 @@ func (m *Mirror) AfterSet(colName string, _ xorm.Cell) {
 			log.Error(3, "GetRepositoryByID[%d]: %v", m.ID, err)
 		}
 	}
+}
+
+func (m *Mirror) readAddress() {
+	if len(m.address) > 0 {
+		return
+	}
+
+	cfg, err := ini.Load(m.Repo.GitConfigPath())
+	if err != nil {
+		log.Error(4, "Load: %v", err)
+		return
+	}
+	m.address = cfg.Section("remote \"origin\"").Key("url").Value()
+}
+
+// HandleCloneUserCredentials replaces user credentials from HTTP/HTTPS URL
+// with placeholder <credentials>.
+// It will fail for any other forms of clone addresses.
+func HandleCloneUserCredentials(url string, mosaics bool) string {
+	i := strings.Index(url, "@")
+	if i == -1 {
+		return url
+	}
+	start := strings.Index(url, "://")
+	if start == -1 {
+		return url
+	}
+	if mosaics {
+		return url[:start+3] + "<credentials>" + url[i:]
+	}
+	return url[:start+3] + url[i+1:]
+}
+
+// Address returns mirror address from Git repository config without credentials.
+func (m *Mirror) Address() string {
+	m.readAddress()
+	return HandleCloneUserCredentials(m.address, false)
+}
+
+// FullAddress returns mirror address from Git repository config.
+func (m *Mirror) FullAddress() string {
+	m.readAddress()
+	return m.address
+}
+
+// SaveAddress writes new address to Git repository config.
+func (m *Mirror) SaveAddress(addr string) error {
+	configPath := m.Repo.GitConfigPath()
+	cfg, err := ini.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("Load: %v", err)
+	}
+
+	cfg.Section("remote \"origin\"").Key("url").SetValue(addr)
+	return cfg.SaveToIndent(configPath, "\t")
 }
 
 func getMirror(e Engine, repoId int64) (*Mirror, error) {
@@ -402,32 +591,26 @@ func UpdateMirror(m *Mirror) error {
 	return updateMirror(x, m)
 }
 
-// MirrorRepository creates a mirror repository from source.
-func MirrorRepository(repoId int64, userName, repoName, repoPath, url string) error {
-	_, stderr, err := process.ExecTimeout(10*time.Minute,
-		fmt.Sprintf("MirrorRepository: %s/%s", userName, repoName),
-		"git", "clone", "--mirror", url, repoPath)
-	if err != nil {
-		return errors.New("git clone --mirror: " + stderr)
-	}
+func createUpdateHook(repoPath string) error {
+	return git.SetUpdateHook(repoPath,
+		fmt.Sprintf(_TPL_UPDATE_HOOK, setting.ScriptType, "\""+setting.AppPath+"\"", setting.CustomConf))
+}
 
-	if _, err = x.InsertOne(&Mirror{
-		RepoID:     repoId,
-		Interval:   24,
-		NextUpdate: time.Now().Add(24 * time.Hour),
-	}); err != nil {
-		return err
-	}
-	return nil
+type MigrateRepoOptions struct {
+	Name        string
+	Description string
+	IsPrivate   bool
+	IsMirror    bool
+	RemoteAddr  string
 }
 
 // MigrateRepository migrates a existing repository from other project hosting.
-func MigrateRepository(u *User, name, desc string, private, mirror bool, url string) (*Repository, error) {
+func MigrateRepository(u *User, opts MigrateRepoOptions) (*Repository, error) {
 	repo, err := CreateRepository(u, CreateRepoOptions{
-		Name:        name,
-		Description: desc,
-		IsPrivate:   private,
-		IsMirror:    mirror,
+		Name:        opts.Name,
+		Description: opts.Description,
+		IsPrivate:   opts.IsPrivate,
+		IsMirror:    opts.IsMirror,
 	})
 	if err != nil {
 		return nil, err
@@ -437,7 +620,7 @@ func MigrateRepository(u *User, name, desc string, private, mirror bool, url str
 	tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("%d", time.Now().Nanosecond()))
 	os.MkdirAll(tmpDir, os.ModePerm)
 
-	repoPath := RepoPath(u.Name, name)
+	repoPath := RepoPath(u.Name, opts.Name)
 
 	if u.IsOrganization() {
 		t, err := u.GetOwnerTeam()
@@ -449,29 +632,46 @@ func MigrateRepository(u *User, name, desc string, private, mirror bool, url str
 		repo.NumWatches = 1
 	}
 
-	repo.IsBare = false
-	if mirror {
-		if err = MirrorRepository(repo.ID, u.Name, repo.Name, repoPath, url); err != nil {
-			return repo, err
-		}
-		repo.IsMirror = true
-		return repo, UpdateRepository(repo, false)
-	} else {
-		os.RemoveAll(repoPath)
+	os.RemoveAll(repoPath)
+	if err = git.Clone(opts.RemoteAddr, repoPath, git.CloneRepoOptions{
+		Mirror:  true,
+		Quiet:   true,
+		Timeout: 10 * time.Minute,
+	}); err != nil {
+		return repo, fmt.Errorf("Clone: %v", err)
 	}
 
-	// FIXME: this command could for both migrate and mirror
-	_, stderr, err := process.ExecTimeout(10*time.Minute,
-		fmt.Sprintf("MigrateRepository: %s", repoPath),
-		"git", "clone", "--mirror", "--bare", "--quiet", url, repoPath)
+	if opts.IsMirror {
+		if _, err = x.InsertOne(&Mirror{
+			RepoID:     repo.ID,
+			Interval:   24,
+			NextUpdate: time.Now().Add(24 * time.Hour),
+		}); err != nil {
+			return repo, fmt.Errorf("InsertOne: %v", err)
+		}
+
+		repo.IsMirror = true
+		return repo, UpdateRepository(repo, false)
+	}
+
+	if err = createUpdateHook(repoPath); err != nil {
+		return repo, fmt.Errorf("createUpdateHook: %v", err)
+	}
+
+	// Clean up mirror info which prevents "push --all".
+	// This also removes possible user credentials.
+	configPath := repo.GitConfigPath()
+	cfg, err := ini.Load(configPath)
 	if err != nil {
-		return repo, fmt.Errorf("git clone --mirror --bare --quiet: %v", stderr)
-	} else if err = createUpdateHook(repoPath); err != nil {
-		return repo, fmt.Errorf("create update hook: %v", err)
+		return repo, fmt.Errorf("open config file: %v", err)
+	}
+	cfg.DeleteSection("remote \"origin\"")
+	if err = cfg.SaveToIndent(configPath, "\t"); err != nil {
+		return repo, fmt.Errorf("save config file: %v", err)
 	}
 
 	// Check if repository is empty.
-	_, stderr, err = com.ExecCmdDir(repoPath, "git", "log", "-1")
+	_, stderr, err := com.ExecCmdDir(repoPath, "git", "log", "-1")
 	if err != nil {
 		if strings.Contains(stderr, "fatal: bad default revision 'HEAD'") {
 			repo.IsBare = true
@@ -480,13 +680,19 @@ func MigrateRepository(u *User, name, desc string, private, mirror bool, url str
 		}
 	}
 
-	// Check if repository has master branch, if so set it to default branch.
+	// Try to get HEAD branch and set it as default branch.
 	gitRepo, err := git.OpenRepository(repoPath)
 	if err != nil {
-		return repo, fmt.Errorf("open git repository: %v", err)
+		log.Error(4, "OpenRepository: %v", err)
+		return repo, nil
 	}
-	if gitRepo.IsBranchExist("master") {
-		repo.DefaultBranch = "master"
+	headBranch, err := gitRepo.GetHEADBranch()
+	if err != nil {
+		log.Error(4, "GetHEADBranch: %v", err)
+		return repo, nil
+	}
+	if headBranch != nil {
+		repo.DefaultBranch = headBranch.Name
 	}
 
 	return repo, UpdateRepository(repo, false)
@@ -496,31 +702,24 @@ func MigrateRepository(u *User, name, desc string, private, mirror bool, url str
 func initRepoCommit(tmpPath string, sig *git.Signature) (err error) {
 	var stderr string
 	if _, stderr, err = process.ExecDir(-1,
-		tmpPath, fmt.Sprintf("initRepoCommit(git add): %s", tmpPath),
+		tmpPath, fmt.Sprintf("initRepoCommit (git add): %s", tmpPath),
 		"git", "add", "--all"); err != nil {
 		return fmt.Errorf("git add: %s", stderr)
 	}
 
 	if _, stderr, err = process.ExecDir(-1,
-		tmpPath, fmt.Sprintf("initRepoCommit(git commit): %s", tmpPath),
+		tmpPath, fmt.Sprintf("initRepoCommit (git commit): %s", tmpPath),
 		"git", "commit", fmt.Sprintf("--author='%s <%s>'", sig.Name, sig.Email),
 		"-m", "initial commit"); err != nil {
 		return fmt.Errorf("git commit: %s", stderr)
 	}
 
 	if _, stderr, err = process.ExecDir(-1,
-		tmpPath, fmt.Sprintf("initRepoCommit(git push): %s", tmpPath),
+		tmpPath, fmt.Sprintf("initRepoCommit (git push): %s", tmpPath),
 		"git", "push", "origin", "master"); err != nil {
 		return fmt.Errorf("git push: %s", stderr)
 	}
 	return nil
-}
-
-func createUpdateHook(repoPath string) error {
-	hookPath := path.Join(repoPath, "hooks/update")
-	os.MkdirAll(path.Dir(hookPath), os.ModePerm)
-	return ioutil.WriteFile(hookPath,
-		[]byte(fmt.Sprintf(_TPL_UPDATE_HOOK, setting.ScriptType, "\""+appPath+"\"", setting.CustomConf)), 0777)
 }
 
 type CreateRepoOptions struct {
@@ -559,10 +758,7 @@ func prepareRepoCommit(repo *Repository, tmpDir, repoPath string, opts CreateRep
 		return fmt.Errorf("getRepoInitFile[%s]: %v", opts.Readme, err)
 	}
 
-	cloneLink, err := repo.CloneLink()
-	if err != nil {
-		return fmt.Errorf("CloneLink: %v", err)
-	}
+	cloneLink := repo.CloneLink()
 	match := map[string]string{
 		"Name":           repo.Name,
 		"Description":    repo.Description,
@@ -611,22 +807,17 @@ func prepareRepoCommit(repo *Repository, tmpDir, repoPath string, opts CreateRep
 }
 
 // InitRepository initializes README and .gitignore if needed.
-func initRepository(e Engine, repoPath string, u *User, repo *Repository, opts CreateRepoOptions) error {
+func initRepository(e Engine, repoPath string, u *User, repo *Repository, opts CreateRepoOptions) (err error) {
 	// Somehow the directory could exist.
 	if com.IsExist(repoPath) {
 		return fmt.Errorf("initRepository: path already exists: %s", repoPath)
 	}
 
 	// Init bare new repository.
-	os.MkdirAll(repoPath, os.ModePerm)
-	_, stderr, err := process.ExecDir(-1, repoPath,
-		fmt.Sprintf("initRepository(git init --bare): %s", repoPath), "git", "init", "--bare")
-	if err != nil {
-		return fmt.Errorf("git init --bare: %v - %s", err, stderr)
-	}
-
-	if err := createUpdateHook(repoPath); err != nil {
-		return err
+	if err = git.InitRepository(repoPath, true); err != nil {
+		return fmt.Errorf("InitRepository: %v", err)
+	} else if err = createUpdateHook(repoPath); err != nil {
+		return fmt.Errorf("createUpdateHook: %v", err)
 	}
 
 	tmpDir := filepath.Join(os.TempDir(), "gogs-"+repo.Name+"-"+com.ToStr(time.Now().Nanosecond()))
@@ -713,13 +904,20 @@ func createRepository(e *xorm.Session, u *User, repo *Repository) (err error) {
 
 // CreateRepository creates a repository for given user or organization.
 func CreateRepository(u *User, opts CreateRepoOptions) (_ *Repository, err error) {
+	if !u.CanCreateRepo() {
+		return nil, ErrReachLimitOfRepo{u.MaxRepoCreation}
+	}
+
 	repo := &Repository{
-		OwnerID:     u.Id,
-		Owner:       u,
-		Name:        opts.Name,
-		LowerName:   strings.ToLower(opts.Name),
-		Description: opts.Description,
-		IsPrivate:   opts.IsPrivate,
+		OwnerID:      u.Id,
+		Owner:        u,
+		Name:         opts.Name,
+		LowerName:    strings.ToLower(opts.Name),
+		Description:  opts.Description,
+		IsPrivate:    opts.IsPrivate,
+		EnableWiki:   true,
+		EnableIssues: true,
+		EnablePulls:  true,
 	}
 
 	sess := x.NewSession()
@@ -776,21 +974,16 @@ func CountPublicRepositories() int64 {
 	return countRepositories(false)
 }
 
-// GetRepositoriesWithUsers returns given number of repository objects with offset.
-// It also auto-gets corresponding users.
-func GetRepositoriesWithUsers(num, offset int) ([]*Repository, error) {
-	repos := make([]*Repository, 0, num)
-	if err := x.Limit(num, offset).Asc("id").Find(&repos); err != nil {
+// RepositoriesWithUsers returns number of repos in given page.
+func RepositoriesWithUsers(page, pageSize int) (_ []*Repository, err error) {
+	repos := make([]*Repository, 0, pageSize)
+	if err = x.Limit(pageSize, (page-1)*pageSize).Asc("id").Find(&repos); err != nil {
 		return nil, err
 	}
 
-	for _, repo := range repos {
-		repo.Owner = &User{Id: repo.OwnerID}
-		has, err := x.Get(repo.Owner)
-		if err != nil {
+	for i := range repos {
+		if err = repos[i].GetOwner(); err != nil {
 			return nil, err
-		} else if !has {
-			return nil, ErrUserNotExist{repo.OwnerID, ""}
 		}
 	}
 
@@ -836,9 +1029,9 @@ func TransferOwnership(u *User, newOwnerName string, repo *Repository) error {
 	}
 
 	// Remove redundant collaborators.
-	collaborators, err := repo.GetCollaborators()
+	collaborators, err := repo.getCollaborators(sess)
 	if err != nil {
-		return fmt.Errorf("GetCollaborators: %v", err)
+		return fmt.Errorf("getCollaborators: %v", err)
 	}
 
 	// Dummy object.
@@ -874,9 +1067,9 @@ func TransferOwnership(u *User, newOwnerName string, repo *Repository) error {
 	}
 
 	if newOwner.IsOrganization() {
-		t, err := newOwner.GetOwnerTeam()
+		t, err := newOwner.getOwnerTeam(sess)
 		if err != nil {
-			return fmt.Errorf("GetOwnerTeam: %v", err)
+			return fmt.Errorf("getOwnerTeam: %v", err)
 		} else if err = t.addRepository(sess, repo); err != nil {
 			return fmt.Errorf("add to owner team: %v", err)
 		}
@@ -902,7 +1095,14 @@ func TransferOwnership(u *User, newOwnerName string, repo *Repository) error {
 
 	// Change repository directory name.
 	if err = os.Rename(RepoPath(owner.Name, repo.Name), RepoPath(newOwner.Name, repo.Name)); err != nil {
-		return fmt.Errorf("rename directory: %v", err)
+		return fmt.Errorf("rename repository directory: %v", err)
+	}
+
+	wikiPath := WikiPath(owner.Name, repo.Name)
+	if com.IsExist(wikiPath) {
+		if err = os.Rename(wikiPath, WikiPath(newOwner.Name, repo.Name)); err != nil {
+			return fmt.Errorf("rename repository wiki: %v", err)
+		}
 	}
 
 	return sess.Commit()
@@ -924,7 +1124,18 @@ func ChangeRepositoryName(u *User, oldRepoName, newRepoName string) (err error) 
 	}
 
 	// Change repository directory name.
-	return os.Rename(RepoPath(u.LowerName, oldRepoName), RepoPath(u.LowerName, newRepoName))
+	if err = os.Rename(RepoPath(u.Name, oldRepoName), RepoPath(u.Name, newRepoName)); err != nil {
+		return fmt.Errorf("rename repository directory: %v", err)
+	}
+
+	wikiPath := WikiPath(u.Name, oldRepoName)
+	if com.IsExist(wikiPath) {
+		if err = os.Rename(wikiPath, WikiPath(u.Name, newRepoName)); err != nil {
+			return fmt.Errorf("rename repository wiki: %v", err)
+		}
+	}
+
+	return nil
 }
 
 func getRepositoriesByForkID(e Engine, forkID int64) ([]*Repository, error) {
@@ -955,13 +1166,11 @@ func updateRepository(e Engine, repo *Repository, visibilityChanged bool) (err e
 		if err = repo.getOwner(e); err != nil {
 			return fmt.Errorf("getOwner: %v", err)
 		}
-		if !repo.Owner.IsOrganization() {
-			return nil
-		}
-
-		// Organization repository need to recalculate access table when visivility is changed.
-		if err = repo.recalculateTeamAccesses(e, 0); err != nil {
-			return fmt.Errorf("recalculateTeamAccesses: %v", err)
+		if repo.Owner.IsOrganization() {
+			// Organization repository need to recalculate access table when visivility is changed.
+			if err = repo.recalculateTeamAccesses(e, 0); err != nil {
+				return fmt.Errorf("recalculateTeamAccesses: %v", err)
+			}
 		}
 
 		forkRepos, err := getRepositoriesByForkID(e, repo.ID)
@@ -1030,26 +1239,20 @@ func DeleteRepository(uid, repoID int64) error {
 		}
 	}
 
-	if _, err = sess.Delete(&Repository{ID: repoID}); err != nil {
-		return err
-	} else if _, err = sess.Delete(&Access{RepoID: repo.ID}); err != nil {
-		return err
-	} else if _, err = sess.Delete(&Action{RepoID: repo.ID}); err != nil {
-		return err
-	} else if _, err = sess.Delete(&Watch{RepoID: repoID}); err != nil {
-		return err
-	} else if _, err = sess.Delete(&Mirror{RepoID: repoID}); err != nil {
-		return err
-	} else if _, err = sess.Delete(&IssueUser{RepoID: repoID}); err != nil {
-		return err
-	} else if _, err = sess.Delete(&Milestone{RepoID: repoID}); err != nil {
-		return err
-	} else if _, err = sess.Delete(&Release{RepoId: repoID}); err != nil {
-		return err
-	} else if _, err = sess.Delete(&Collaboration{RepoID: repoID}); err != nil {
-		return err
-	} else if _, err = sess.Delete(&PullRequest{BaseRepoID: repoID}); err != nil {
-		return err
+	if err = deleteBeans(sess,
+		&Repository{ID: repoID},
+		&Access{RepoID: repo.ID},
+		&Action{RepoID: repo.ID},
+		&Watch{RepoID: repoID},
+		&Star{RepoID: repoID},
+		&Mirror{RepoID: repoID},
+		&IssueUser{RepoID: repoID},
+		&Milestone{RepoID: repoID},
+		&Release{RepoID: repoID},
+		&Collaboration{RepoID: repoID},
+		&PullRequest{BaseRepoID: repoID},
+	); err != nil {
+		return fmt.Errorf("deleteBeans: %v", err)
 	}
 
 	// Delete comments and attachments.
@@ -1091,15 +1294,23 @@ func DeleteRepository(uid, repoID int64) error {
 	}
 
 	// Remove repository files.
-	repoPath, err := repo.repoPath(sess)
-	if err != nil {
-		return fmt.Errorf("RepoPath: %v", err)
-	}
+	repoPath := repo.repoPath(sess)
 	if err = os.RemoveAll(repoPath); err != nil {
-		desc := fmt.Sprintf("delete repository files[%s]: %v", repoPath, err)
+		desc := fmt.Sprintf("delete repository files [%s]: %v", repoPath, err)
 		log.Warn(desc)
 		if err = CreateRepositoryNotice(desc); err != nil {
-			log.Error(4, "add notice: %v", err)
+			log.Error(4, "CreateRepositoryNotice: %v", err)
+		}
+	}
+
+	wikiPaths := []string{repo.WikiPath(), repo.LocalWikiPath()}
+	for _, wikiPath := range wikiPaths {
+		if err = os.RemoveAll(wikiPath); err != nil {
+			desc := fmt.Sprintf("delete repository wiki [%s]: %v", wikiPath, err)
+			log.Warn(desc)
+			if err = CreateRepositoryNotice(desc); err != nil {
+				log.Error(4, "CreateRepositoryNotice: %v", err)
+			}
 		}
 	}
 
@@ -1242,11 +1453,40 @@ func DeleteRepositoryArchives() error {
 	return x.Where("id > 0").Iterate(new(Repository),
 		func(idx int, bean interface{}) error {
 			repo := bean.(*Repository)
-			if err := repo.GetOwner(); err != nil {
-				return err
-			}
-			return os.RemoveAll(filepath.Join(RepoPath(repo.Owner.Name, repo.Name), "archives"))
+			return os.RemoveAll(filepath.Join(repo.RepoPath(), "archives"))
 		})
+}
+
+// DeleteMissingRepositories deletes all repository records that lost Git files.
+func DeleteMissingRepositories() error {
+	repos := make([]*Repository, 0, 5)
+	if err := x.Where("id > 0").Iterate(new(Repository),
+		func(idx int, bean interface{}) error {
+			repo := bean.(*Repository)
+			if !com.IsDir(repo.RepoPath()) {
+				repos = append(repos, repo)
+			}
+			return nil
+		}); err != nil {
+		if err2 := CreateRepositoryNotice(fmt.Sprintf("DeleteMissingRepositories: %v", err)); err2 != nil {
+			log.Error(4, "CreateRepositoryNotice: %v", err2)
+		}
+		return nil
+	}
+
+	if len(repos) == 0 {
+		return nil
+	}
+
+	for _, repo := range repos {
+		log.Trace("Deleting %d/%d...", repo.OwnerID, repo.ID)
+		if err := DeleteRepository(repo.OwnerID, repo.ID); err != nil {
+			if err2 := CreateRepositoryNotice(fmt.Sprintf("DeleteRepository [%d]: %v", repo.ID, err)); err2 != nil {
+				log.Error(4, "CreateRepositoryNotice: %v", err2)
+			}
+		}
+	}
+	return nil
 }
 
 // RewriteRepositoryUpdateHook rewrites all repositories' update hook.
@@ -1254,27 +1494,58 @@ func RewriteRepositoryUpdateHook() error {
 	return x.Where("id > 0").Iterate(new(Repository),
 		func(idx int, bean interface{}) error {
 			repo := bean.(*Repository)
-			if err := repo.GetOwner(); err != nil {
-				return err
-			}
-			return createUpdateHook(RepoPath(repo.Owner.Name, repo.Name))
+			return createUpdateHook(repo.RepoPath())
 		})
 }
 
-var (
-	// Prevent duplicate running tasks.
-	isMirrorUpdating = false
-	isGitFscking     = false
-	isCheckingRepos  = false
+// statusPool represents a pool of status with true/false.
+type statusPool struct {
+	lock sync.RWMutex
+	pool map[string]bool
+}
+
+// Start sets value of given name to true in the pool.
+func (p *statusPool) Start(name string) {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+
+	p.pool[name] = true
+}
+
+// Stop sets value of given name to false in the pool.
+func (p *statusPool) Stop(name string) {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+
+	p.pool[name] = false
+}
+
+// IsRunning checks if value of given name is set to true in the pool.
+func (p *statusPool) IsRunning(name string) bool {
+	p.lock.RLock()
+	defer p.lock.RUnlock()
+
+	return p.pool[name]
+}
+
+// Prevent duplicate running tasks.
+var taskStatusPool = &statusPool{
+	pool: make(map[string]bool),
+}
+
+const (
+	_MIRROR_UPDATE = "mirror_update"
+	_GIT_FSCK      = "git_fsck"
+	_CHECK_REPOs   = "check_repos"
 )
 
 // MirrorUpdate checks and updates mirror repositories.
 func MirrorUpdate() {
-	if isMirrorUpdating {
+	if taskStatusPool.IsRunning(_MIRROR_UPDATE) {
 		return
 	}
-	isMirrorUpdating = true
-	defer func() { isMirrorUpdating = false }()
+	taskStatusPool.Start(_MIRROR_UPDATE)
+	defer taskStatusPool.Stop(_MIRROR_UPDATE)
 
 	log.Trace("Doing: MirrorUpdate")
 
@@ -1290,11 +1561,7 @@ func MirrorUpdate() {
 			return nil
 		}
 
-		repoPath, err := m.Repo.RepoPath()
-		if err != nil {
-			return fmt.Errorf("Repo.RepoPath: %v", err)
-		}
-
+		repoPath := m.Repo.RepoPath()
 		if _, stderr, err := process.ExecDir(10*time.Minute,
 			repoPath, fmt.Sprintf("MirrorUpdate: %s", repoPath),
 			"git", "remote", "update", "--prune"); err != nil {
@@ -1322,25 +1589,19 @@ func MirrorUpdate() {
 
 // GitFsck calls 'git fsck' to check repository health.
 func GitFsck() {
-	if isGitFscking {
+	if taskStatusPool.IsRunning(_GIT_FSCK) {
 		return
 	}
-	isGitFscking = true
-	defer func() { isGitFscking = false }()
+	taskStatusPool.Start(_GIT_FSCK)
+	defer taskStatusPool.Stop(_GIT_FSCK)
 
 	log.Trace("Doing: GitFsck")
 
-	args := append([]string{"fsck"}, setting.Cron.RepoHealthCheck.Args...)
 	if err := x.Where("id>0").Iterate(new(Repository),
 		func(idx int, bean interface{}) error {
 			repo := bean.(*Repository)
-			repoPath, err := repo.RepoPath()
-			if err != nil {
-				return fmt.Errorf("RepoPath: %v", err)
-			}
-
-			_, _, err = process.ExecDir(-1, repoPath, "Repository health check", "git", args...)
-			if err != nil {
+			repoPath := repo.RepoPath()
+			if err := git.Fsck(repoPath, setting.Cron.RepoHealthCheck.Timeout, setting.Cron.RepoHealthCheck.Args...); err != nil {
 				desc := fmt.Sprintf("Fail to health check repository(%s)", repoPath)
 				log.Warn(desc)
 				if err = CreateRepositoryNotice(desc); err != nil {
@@ -1391,11 +1652,11 @@ func repoStatsCheck(checker *repoChecker) {
 }
 
 func CheckRepoStats() {
-	if isCheckingRepos {
+	if taskStatusPool.IsRunning(_CHECK_REPOs) {
 		return
 	}
-	isCheckingRepos = true
-	defer func() { isCheckingRepos = false }()
+	taskStatusPool.Start(_CHECK_REPOs)
+	defer taskStatusPool.Stop(_CHECK_REPOs)
 
 	log.Trace("Doing: CheckRepoStats")
 
@@ -1424,12 +1685,18 @@ func CheckRepoStats() {
 			"UPDATE `user` SET num_repos=(SELECT COUNT(*) FROM `repository` WHERE owner_id=?) WHERE id=?",
 			"user count 'num_repos'",
 		},
+		// Issue.NumComments
+		{
+			"SELECT `issue`.id FROM `issue` WHERE `issue`.num_comments!=(SELECT COUNT(*) FROM `comment` WHERE issue_id=`issue`.id AND type=0)",
+			"UPDATE `issue` SET num_comments=(SELECT COUNT(*) FROM `comment` WHERE issue_id=? AND type=0) WHERE id=?",
+			"issue count 'num_comments'",
+		},
 	}
 	for i := range checkers {
 		repoStatsCheck(checkers[i])
 	}
 
-	// FIXME: use checker when v0.8, stop supporting old fork repo format.
+	// FIXME: use checker when v0.9, stop supporting old fork repo format.
 	// ***** START: Repository.NumForks *****
 	results, err := x.Query("SELECT repo.id FROM `repository` repo WHERE repo.num_forks!=(SELECT COUNT(*) FROM `repository` WHERE fork_id=repo.id)")
 	if err != nil {
@@ -1574,15 +1841,19 @@ type Watch struct {
 	RepoID int64 `xorm:"UNIQUE(watch)"`
 }
 
+func isWatching(e Engine, uid, repoId int64) bool {
+	has, _ := e.Get(&Watch{0, uid, repoId})
+	return has
+}
+
 // IsWatching checks if user has watched given repository.
 func IsWatching(uid, repoId int64) bool {
-	has, _ := x.Get(&Watch{0, uid, repoId})
-	return has
+	return isWatching(x, uid, repoId)
 }
 
 func watchRepo(e Engine, uid, repoId int64, watch bool) (err error) {
 	if watch {
-		if IsWatching(uid, repoId) {
+		if isWatching(e, uid, repoId) {
 			return nil
 		}
 		if _, err = e.Insert(&Watch{RepoID: repoId, UserID: uid}); err != nil {
@@ -1590,7 +1861,7 @@ func watchRepo(e Engine, uid, repoId int64, watch bool) (err error) {
 		}
 		_, err = e.Exec("UPDATE `repository` SET num_watches = num_watches + 1 WHERE id = ?", repoId)
 	} else {
-		if !IsWatching(uid, repoId) {
+		if !isWatching(e, uid, repoId) {
 			return nil
 		}
 		if _, err = e.Delete(&Watch{0, uid, repoId}); err != nil {
@@ -1606,15 +1877,26 @@ func WatchRepo(uid, repoId int64, watch bool) (err error) {
 	return watchRepo(x, uid, repoId, watch)
 }
 
-func getWatchers(e Engine, rid int64) ([]*Watch, error) {
+func getWatchers(e Engine, repoID int64) ([]*Watch, error) {
 	watches := make([]*Watch, 0, 10)
-	err := e.Find(&watches, &Watch{RepoID: rid})
-	return watches, err
+	return watches, e.Find(&watches, &Watch{RepoID: repoID})
 }
 
 // GetWatchers returns all watchers of given repository.
-func GetWatchers(rid int64) ([]*Watch, error) {
-	return getWatchers(x, rid)
+func GetWatchers(repoID int64) ([]*Watch, error) {
+	return getWatchers(x, repoID)
+}
+
+// Repository.GetWatchers returns range of users watching given repository.
+func (repo *Repository) GetWatchers(page int) ([]*User, error) {
+	users := make([]*User, 0, ItemsPerPage)
+	sess := x.Limit(ItemsPerPage, (page-1)*ItemsPerPage).Where("watch.repo_id=?", repo.ID)
+	if setting.UsePostgreSQL {
+		sess = sess.Join("LEFT", "watch", `"user".id=watch.user_id`)
+	} else {
+		sess = sess.Join("LEFT", "watch", "user.id=watch.user_id")
+	}
+	return users, sess.Find(&users)
 }
 
 func notifyWatchers(e Engine, act *Action) error {
@@ -1694,6 +1976,17 @@ func IsStaring(uid, repoId int64) bool {
 	return has
 }
 
+func (repo *Repository) GetStargazers(page int) ([]*User, error) {
+	users := make([]*User, 0, ItemsPerPage)
+	sess := x.Limit(ItemsPerPage, (page-1)*ItemsPerPage).Where("star.repo_id=?", repo.ID)
+	if setting.UsePostgreSQL {
+		sess = sess.Join("LEFT", "star", `"user".id=star.uid`)
+	} else {
+		sess = sess.Join("LEFT", "star", "user.id=star.uid")
+	}
+	return users, sess.Find(&users)
+}
+
 // ___________           __
 // \_   _____/__________|  | __
 //  |    __)/  _ \_  __ \  |/ /
@@ -1735,15 +2028,10 @@ func ForkRepository(u *User, oldRepo *Repository, name, desc string) (_ *Reposit
 		return nil, err
 	}
 
-	oldRepoPath, err := oldRepo.RepoPath()
-	if err != nil {
-		return nil, fmt.Errorf("get old repository path: %v", err)
-	}
-
 	repoPath := RepoPath(u.Name, repo.Name)
 	_, stderr, err := process.ExecTimeout(10*time.Minute,
 		fmt.Sprintf("ForkRepository(git clone): %s/%s", u.Name, repo.Name),
-		"git", "clone", "--bare", oldRepoPath, repoPath)
+		"git", "clone", "--bare", oldRepo.RepoPath(), repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("git clone: %v", stderr)
 	}
@@ -1760,4 +2048,9 @@ func ForkRepository(u *User, oldRepo *Repository, name, desc string) (_ *Reposit
 	}
 
 	return repo, sess.Commit()
+}
+
+func (repo *Repository) GetForks() ([]*Repository, error) {
+	forks := make([]*Repository, 0, repo.NumForks)
+	return forks, x.Find(&forks, &Repository{ForkID: repo.ID})
 }

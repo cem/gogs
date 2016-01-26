@@ -5,15 +5,15 @@
 		<div class="navbar">
 			{{template "repo/issue/navbar" .}}
 			<div class="ui right">
-				<a class="ui green button" href="{{$.RepoLink}}/issues/new">{{.i18n.Tr "repo.issues.new"}}</a>
+				<a class="ui green button {{if not .HasForkedRepo}}disabled{{end}}" href="{{.RepoLink}}/compare/{{.BranchName}}...{{.SignedUserName}}:{{.BranchName}}">{{.i18n.Tr "repo.pulls.new"}}</a>
 			</div>
 		</div>
 		<div class="ui divider"></div>
 		{{template "repo/issue/view_title" .}}
 		{{template "repo/pulls/tab_menu" .}}
-	  <div class="ui bottom attached tab pull segment active">
+		<div class="ui bottom attached tab pull segment active">
 			{{template "repo/diff_box" .}}
-	  </div>
+		</div>
 	</div>
 </div>
 {{template "base/footer" .}}

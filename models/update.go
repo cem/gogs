@@ -10,49 +10,65 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/gogits/gogs/modules/base"
-	"github.com/gogits/gogs/modules/git"
+	"github.com/gogits/git-module"
+
 	"github.com/gogits/gogs/modules/log"
 )
 
 type UpdateTask struct {
-	Id          int64
-	Uuid        string `xorm:"index"`
+	ID          int64  `xorm:"pk autoincr"`
+	UUID        string `xorm:"index"`
 	RefName     string
-	OldCommitId string
-	NewCommitId string
+	OldCommitID string
+	NewCommitID string
 }
-
-const (
-	MAX_COMMITS int = 5
-)
 
 func AddUpdateTask(task *UpdateTask) error {
 	_, err := x.Insert(task)
 	return err
 }
 
-func GetUpdateTasksByUuid(uuid string) ([]*UpdateTask, error) {
+// GetUpdateTaskByUUID returns update task by given UUID.
+func GetUpdateTaskByUUID(uuid string) (*UpdateTask, error) {
 	task := &UpdateTask{
-		Uuid: uuid,
+		UUID: uuid,
 	}
-	tasks := make([]*UpdateTask, 0)
-	err := x.Find(&tasks, task)
+	has, err := x.Get(task)
 	if err != nil {
 		return nil, err
+	} else if !has {
+		return nil, ErrUpdateTaskNotExist{uuid}
 	}
-	return tasks, nil
+	return task, nil
 }
 
-func DelUpdateTasksByUuid(uuid string) error {
-	_, err := x.Delete(&UpdateTask{Uuid: uuid})
+func DeleteUpdateTaskByUUID(uuid string) error {
+	_, err := x.Delete(&UpdateTask{UUID: uuid})
 	return err
 }
 
-func Update(refName, oldCommitId, newCommitId, userName, repoUserName, repoName string, userId int64) error {
-	isNew := strings.HasPrefix(oldCommitId, "0000000")
+func ListToPushCommits(l *list.List) *PushCommits {
+	commits := make([]*PushCommit, 0)
+	var actEmail string
+	for e := l.Front(); e != nil; e = e.Next() {
+		commit := e.Value.(*git.Commit)
+		if actEmail == "" {
+			actEmail = commit.Committer.Email
+		}
+		commits = append(commits,
+			&PushCommit{commit.ID.String(),
+				commit.Message(),
+				commit.Author.Email,
+				commit.Author.Name,
+			})
+	}
+	return &PushCommits{l.Len(), commits, "", nil}
+}
+
+func Update(refName, oldCommitID, newCommitID, userName, repoUserName, repoName string, userID int64) error {
+	isNew := strings.HasPrefix(oldCommitID, "0000000")
 	if isNew &&
-		strings.HasPrefix(newCommitId, "0000000") {
+		strings.HasPrefix(newCommitID, "0000000") {
 		return fmt.Errorf("old rev and new rev both 000000")
 	}
 
@@ -62,23 +78,23 @@ func Update(refName, oldCommitId, newCommitId, userName, repoUserName, repoName 
 	gitUpdate.Dir = f
 	gitUpdate.Run()
 
-	isDel := strings.HasPrefix(newCommitId, "0000000")
+	isDel := strings.HasPrefix(newCommitID, "0000000")
 	if isDel {
-		log.GitLogger.Info("del rev", refName, "from", userName+"/"+repoName+".git", "by", userId)
+		log.GitLogger.Info("del rev", refName, "from", userName+"/"+repoName+".git", "by", userID)
 		return nil
 	}
 
-	repo, err := git.OpenRepository(f)
+	gitRepo, err := git.OpenRepository(f)
 	if err != nil {
 		return fmt.Errorf("runUpdate.Open repoId: %v", err)
 	}
 
-	ru, err := GetUserByName(repoUserName)
+	user, err := GetUserByName(repoUserName)
 	if err != nil {
 		return fmt.Errorf("runUpdate.GetUserByName: %v", err)
 	}
 
-	repos, err := GetRepositoryByName(ru.Id, repoName)
+	repo, err := GetRepositoryByName(user.Id, repoName)
 	if err != nil {
 		return fmt.Errorf("runUpdate.GetRepositoryByName userId: %v", err)
 	}
@@ -86,7 +102,7 @@ func Update(refName, oldCommitId, newCommitId, userName, repoUserName, repoName 
 	// Push tags.
 	if strings.HasPrefix(refName, "refs/tags/") {
 		tagName := git.RefEndName(refName)
-		tag, err := repo.GetTag(tagName)
+		tag, err := gitRepo.GetTag(tagName)
 		if err != nil {
 			log.GitLogger.Fatal(4, "runUpdate.GetTag: %v", err)
 		}
@@ -102,16 +118,16 @@ func Update(refName, oldCommitId, newCommitId, userName, repoUserName, repoName 
 			actEmail = cmt.Committer.Email
 		}
 
-		commit := &base.PushCommits{}
+		commit := &PushCommits{}
 
-		if err = CommitRepoAction(userId, ru.Id, userName, actEmail,
-			repos.ID, repoUserName, repoName, refName, commit, oldCommitId, newCommitId); err != nil {
+		if err = CommitRepoAction(userID, user.Id, userName, actEmail,
+			repo.ID, repoUserName, repoName, refName, commit, oldCommitID, newCommitID); err != nil {
 			log.GitLogger.Fatal(4, "CommitRepoAction: %s/%s:%v", repoUserName, repoName, err)
 		}
 		return err
 	}
 
-	newCommit, err := repo.GetCommit(newCommitId)
+	newCommit, err := gitRepo.GetCommit(newCommitID)
 	if err != nil {
 		return fmt.Errorf("runUpdate GetCommit of newCommitId: %v", err)
 	}
@@ -119,14 +135,14 @@ func Update(refName, oldCommitId, newCommitId, userName, repoUserName, repoName 
 	// Push new branch.
 	var l *list.List
 	if isNew {
-		l, err = newCommit.CommitsBefore()
+		l, err = newCommit.CommitsBeforeLimit(10)
 		if err != nil {
-			return fmt.Errorf("Find CommitsBefore erro: %v", err)
+			return fmt.Errorf("CommitsBefore: %v", err)
 		}
 	} else {
-		l, err = newCommit.CommitsBeforeUntil(oldCommitId)
+		l, err = newCommit.CommitsBeforeUntil(oldCommitID)
 		if err != nil {
-			return fmt.Errorf("Find CommitsBeforeUntil erro: %v", err)
+			return fmt.Errorf("CommitsBeforeUntil: %v", err)
 		}
 	}
 
@@ -134,27 +150,8 @@ func Update(refName, oldCommitId, newCommitId, userName, repoUserName, repoName 
 		return fmt.Errorf("runUpdate.Commit repoId: %v", err)
 	}
 
-	// Push commits.
-	commits := make([]*base.PushCommit, 0)
-	var actEmail string
-	for e := l.Front(); e != nil; e = e.Next() {
-		commit := e.Value.(*git.Commit)
-
-		if actEmail == "" {
-			actEmail = commit.Committer.Email
-		}
-		commits = append(commits,
-			&base.PushCommit{commit.Id.String(),
-				commit.Message(),
-				commit.Author.Email,
-				commit.Author.Name})
-		if len(commits) >= MAX_COMMITS {
-			break
-		}
-	}
-
-	if err = CommitRepoAction(userId, ru.Id, userName, actEmail,
-		repos.ID, repoUserName, repoName, refName, &base.PushCommits{l.Len(), commits, ""}, oldCommitId, newCommitId); err != nil {
+	if err = CommitRepoAction(userID, user.Id, userName, user.Email,
+		repo.ID, repoUserName, repoName, refName, ListToPushCommits(l), oldCommitID, newCommitID); err != nil {
 		return fmt.Errorf("runUpdate.models.CommitRepoAction: %s/%s:%v", repoUserName, repoName, err)
 	}
 	return nil

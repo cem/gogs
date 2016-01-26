@@ -14,6 +14,7 @@ import (
 	"image"
 	"image/jpeg"
 	_ "image/jpeg"
+	"image/png"
 	"os"
 	"path"
 	"path/filepath"
@@ -24,9 +25,10 @@ import (
 	"github.com/go-xorm/xorm"
 	"github.com/nfnt/resize"
 
+	"github.com/gogits/git-module"
+
 	"github.com/gogits/gogs/modules/avatar"
 	"github.com/gogits/gogs/modules/base"
-	"github.com/gogits/gogs/modules/git"
 	"github.com/gogits/gogs/modules/log"
 	"github.com/gogits/gogs/modules/setting"
 )
@@ -50,13 +52,13 @@ var (
 
 // User represents the object of individual and member of organization.
 type User struct {
-	Id              int64
+	Id        int64
 	SandstormId     string `xorm:"CHAR(32) UNIQUE NOT NULL"`
 	SandstormAvatar string `xorm:"NOT NULL"`
-	LowerName       string `xorm:"UNIQUE NOT NULL"`
-	Name            string `xorm:"UNIQUE NOT NULL"`
-	FullName        string
-	// Email is the primary email address (to be used for communication).
+	LowerName string `xorm:"UNIQUE NOT NULL"`
+	Name      string `xorm:"UNIQUE NOT NULL"`
+	FullName  string
+	// Email is the primary email address (to be used for communication)
 	Email       string `xorm:"NOT NULL"`
 	Passwd      string `xorm:"NOT NULL"`
 	LoginType   LoginType
@@ -73,31 +75,40 @@ type User struct {
 	Created     time.Time `xorm:"CREATED"`
 	Updated     time.Time `xorm:"UPDATED"`
 
-	// Remember visibility choice for convenience.
+	// Remember visibility choice for convenience, true for private
 	LastRepoVisibility bool
+	// Maximum repository creation limit, -1 means use gloabl default
+	MaxRepoCreation int `xorm:"NOT NULL DEFAULT -1"`
 
-	// Permissions.
-	IsActive     bool
-	IsAdmin      bool
-	AllowGitHook bool
+	// Permissions
+	IsActive         bool
+	IsAdmin          bool
+	AllowGitHook     bool
+	AllowImportLocal bool // Allow migrate repository by local path
 
-	// Avatar.
+	// Avatar
 	Avatar          string `xorm:"VARCHAR(2048) NOT NULL"`
 	AvatarEmail     string `xorm:"NOT NULL"`
 	UseCustomAvatar bool
 
-	// Counters.
-	NumFollowers  int
-	NumFollowings int
-	NumStars      int
-	NumRepos      int
+	// Counters
+	NumFollowers int
+	NumFollowing int `xorm:"NOT NULL DEFAULT 0"`
+	NumStars     int
+	NumRepos     int
 
-	// For organization.
+	// For organization
 	Description string
 	NumTeams    int
 	NumMembers  int
 	Teams       []*Team `xorm:"-"`
 	Members     []*User `xorm:"-"`
+}
+
+func (u *User) BeforeUpdate() {
+	if u.MaxRepoCreation < -1 {
+		u.MaxRepoCreation = -1
+	}
 }
 
 func (u *User) AfterSet(colName string, _ xorm.Cell) {
@@ -107,6 +118,44 @@ func (u *User) AfterSet(colName string, _ xorm.Cell) {
 	case "created":
 		u.Created = regulateTimeZone(u.Created)
 	}
+}
+
+// returns true if user login type is LOGIN_PLAIN.
+func (u *User) IsLocal() bool {
+	return u.LoginType <= LOGIN_PLAIN
+}
+
+// HasForkedRepo checks if user has already forked a repository with given ID.
+func (u *User) HasForkedRepo(repoID int64) bool {
+	_, has := HasForkedRepo(u.Id, repoID)
+	return has
+}
+
+func (u *User) RepoCreationNum() int {
+	if u.MaxRepoCreation <= -1 {
+		return setting.Repository.MaxCreationLimit
+	}
+	return u.MaxRepoCreation
+}
+
+func (u *User) CanCreateRepo() bool {
+	if u.MaxRepoCreation <= -1 {
+		if setting.Repository.MaxCreationLimit <= -1 {
+			return true
+		}
+		return u.NumRepos < setting.Repository.MaxCreationLimit
+	}
+	return u.NumRepos < u.MaxRepoCreation
+}
+
+// CanEditGitHook returns true if user can edit Git hooks.
+func (u *User) CanEditGitHook() bool {
+	return u.IsAdmin || u.AllowGitHook
+}
+
+// CanImportLocal returns true if user can migrate repository by local path.
+func (u *User) CanImportLocal() bool {
+	return u.IsAdmin || u.AllowImportLocal
 }
 
 // EmailAdresses is the list of all email addresses of a user. Can contain the
@@ -129,9 +178,6 @@ func (u *User) DashboardLink() string {
 
 // HomeLink returns the user or organization home page link.
 func (u *User) HomeLink() string {
-	if u.IsOrganization() {
-		return setting.AppSubUrl + "/org/" + u.Name
-	}
 	return setting.AppSubUrl + "/" + u.Name
 }
 
@@ -189,6 +235,34 @@ func (u *User) AvatarLink() string {
 	return u.SandstormAvatar
 }
 
+// User.GetFollwoers returns range of user's followers.
+func (u *User) GetFollowers(page int) ([]*User, error) {
+	users := make([]*User, 0, ItemsPerPage)
+	sess := x.Limit(ItemsPerPage, (page-1)*ItemsPerPage).Where("follow.follow_id=?", u.Id)
+	if setting.UsePostgreSQL {
+		sess = sess.Join("LEFT", "follow", `"user".id=follow.user_id`)
+	} else {
+		sess = sess.Join("LEFT", "follow", "user.id=follow.user_id")
+	}
+	return users, sess.Find(&users)
+}
+
+func (u *User) IsFollowing(followID int64) bool {
+	return IsFollowing(u.Id, followID)
+}
+
+// GetFollowing returns range of user's following.
+func (u *User) GetFollowing(page int) ([]*User, error) {
+	users := make([]*User, 0, ItemsPerPage)
+	sess := x.Limit(ItemsPerPage, (page-1)*ItemsPerPage).Where("follow.user_id=?", u.Id)
+	if setting.UsePostgreSQL {
+		sess = sess.Join("LEFT", "follow", `"user".id=follow.follow_id`)
+	} else {
+		sess = sess.Join("LEFT", "follow", "user.id=follow.follow_id")
+	}
+	return users, sess.Find(&users)
+}
+
 // NewGitSig generates and returns the signature of given user.
 func (u *User) NewGitSig() *git.Signature {
 	return &git.Signature{
@@ -214,14 +288,12 @@ func (u *User) ValidatePassword(passwd string) bool {
 // UploadAvatar saves custom avatar for user.
 // FIXME: split uploads to different subdirs in case we have massive users.
 func (u *User) UploadAvatar(data []byte) error {
-	u.UseCustomAvatar = true
-
 	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
-		return err
+		return fmt.Errorf("Decode: %v", err)
 	}
 
-	m := resize.Resize(234, 234, img, resize.NearestNeighbor)
+	m := resize.Resize(290, 290, img, resize.NearestNeighbor)
 
 	sess := x.NewSession()
 	defer sessionRelease(sess)
@@ -229,19 +301,20 @@ func (u *User) UploadAvatar(data []byte) error {
 		return err
 	}
 
-	if _, err = sess.Id(u.Id).AllCols().Update(u); err != nil {
-		return err
+	u.UseCustomAvatar = true
+	if err = updateUser(sess, u); err != nil {
+		return fmt.Errorf("updateUser: %v", err)
 	}
 
 	os.MkdirAll(setting.AvatarUploadPath, os.ModePerm)
 	fw, err := os.Create(u.CustomAvatarPath())
 	if err != nil {
-		return err
+		return fmt.Errorf("Create: %v", err)
 	}
 	defer fw.Close()
 
-	if err = jpeg.Encode(fw, m, nil); err != nil {
-		return err
+	if err = png.Encode(fw, m); err != nil {
+		return fmt.Errorf("Encode: %v", err)
 	}
 
 	return sess.Commit()
@@ -303,8 +376,8 @@ func (u *User) GetOwnedOrganizations() (err error) {
 }
 
 // GetOrganizations returns all organizations that user belongs to.
-func (u *User) GetOrganizations() error {
-	ous, err := GetOrgUsersByUserId(u.Id)
+func (u *User) GetOrganizations(all bool) error {
+	ous, err := GetOrgUsersByUserID(u.Id, all)
 	if err != nil {
 		return err
 	}
@@ -326,6 +399,10 @@ func (u *User) DisplayName() string {
 		return u.FullName
 	}
 	return u.Name
+}
+
+func (u *User) ShortName(length int) string {
+	return base.EllipsisString(u.Name, length)
 }
 
 // IsUserExist checks if given user name exist,
@@ -379,6 +456,7 @@ func CreateUser(u *User) (err error) {
 		return ErrUserAlreadyExist{u.Name}
 	}
 
+	u.Email = strings.ToLower(u.Email)
 	isExist, err = IsEmailUsed(u.Email)
 	if err != nil {
 		return err
@@ -392,6 +470,7 @@ func CreateUser(u *User) (err error) {
 	u.Rands = GetUserSalt()
 	u.Salt = GetUserSalt()
 	u.EncodePasswd()
+	u.MaxRepoCreation = -1
 
 	sess := x.NewSession()
 	defer sess.Close()
@@ -612,7 +691,7 @@ func deleteUser(e *xorm.Session, u *User) error {
 		&IssueUser{UID: u.Id},
 		&EmailAddress{UID: u.Id},
 	); err != nil {
-		return fmt.Errorf("deleteUser: %v", err)
+		return fmt.Errorf("deleteBeans: %v", err)
 	}
 
 	// ***** START: PublicKey *****
@@ -689,9 +768,9 @@ func UserPath(userName string) string {
 	return filepath.Join(setting.RepoRootPath, strings.ToLower(userName))
 }
 
-func GetUserByKeyId(keyId int64) (*User, error) {
+func GetUserByKeyID(keyID int64) (*User, error) {
 	user := new(User)
-	has, err := x.Sql("SELECT a.* FROM `user` AS a, public_key AS b WHERE a.id = b.owner_id AND b.id=?", keyId).Get(user)
+	has, err := x.Sql("SELECT a.* FROM `user` AS a, public_key AS b WHERE a.id = b.owner_id AND b.id=?", keyID).Get(user)
 	if err != nil {
 		return nil, err
 	} else if !has {
@@ -819,7 +898,7 @@ func GetEmailAddresses(uid int64) ([]*EmailAddress, error) {
 }
 
 func AddEmailAddress(email *EmailAddress) error {
-	email.Email = strings.ToLower(email.Email)
+	email.Email = strings.ToLower(strings.TrimSpace(email.Email))
 	used, err := IsEmailUsed(email.Email)
 	if err != nil {
 		return err
@@ -829,6 +908,29 @@ func AddEmailAddress(email *EmailAddress) error {
 
 	_, err = x.Insert(email)
 	return err
+}
+
+func AddEmailAddresses(emails []*EmailAddress) error {
+	if len(emails) == 0 {
+		return nil
+	}
+
+	// Check if any of them has been used
+	for i := range emails {
+		emails[i].Email = strings.ToLower(strings.TrimSpace(emails[i].Email))
+		used, err := IsEmailUsed(emails[i].Email)
+		if err != nil {
+			return err
+		} else if used {
+			return ErrEmailAlreadyUsed{emails[i].Email}
+		}
+	}
+
+	if _, err := x.Insert(emails); err != nil {
+		return fmt.Errorf("Insert: %v", err)
+	}
+
+	return nil
 }
 
 func (email *EmailAddress) Activate() error {
@@ -845,20 +947,23 @@ func (email *EmailAddress) Activate() error {
 	}
 }
 
-func DeleteEmailAddress(email *EmailAddress) error {
-	has, err := x.Get(email)
-	if err != nil {
-		return err
-	} else if !has {
-		return ErrEmailNotExist
+func DeleteEmailAddress(email *EmailAddress) (err error) {
+	if email.ID > 0 {
+		_, err = x.Id(email.ID).Delete(new(EmailAddress))
+	} else {
+		_, err = x.Where("email=?", email.Email).Delete(new(EmailAddress))
 	}
+	return err
+}
 
-	if _, err = x.Id(email.ID).Delete(email); err != nil {
-		return err
+func DeleteEmailAddresses(emails []*EmailAddress) (err error) {
+	for i := range emails {
+		if err = DeleteEmailAddress(emails[i]); err != nil {
+			return err
+		}
 	}
 
 	return nil
-
 }
 
 func MakeEmailPrimary(email *EmailAddress) error {
@@ -967,7 +1072,7 @@ func GetUserByEmail(email string) (*User, error) {
 		return GetUserByID(emailAddress.UID)
 	}
 
-	return nil, ErrUserNotExist{0, "email"}
+	return nil, ErrUserNotExist{0, email}
 }
 
 // SearchUserByName returns given number of users whose name contains keyword.
@@ -982,100 +1087,73 @@ func SearchUserByName(opt SearchOption) (us []*User, err error) {
 	return us, err
 }
 
-// Follow is connection request for receiving user notification.
+// ___________    .__  .__
+// \_   _____/___ |  | |  |   ______  _  __
+//  |    __)/  _ \|  | |  |  /  _ \ \/ \/ /
+//  |     \(  <_> )  |_|  |_(  <_> )     /
+//  \___  / \____/|____/____/\____/ \/\_/
+//      \/
+
+// Follow represents relations of user and his/her followers.
 type Follow struct {
 	ID       int64 `xorm:"pk autoincr"`
 	UserID   int64 `xorm:"UNIQUE(follow)"`
 	FollowID int64 `xorm:"UNIQUE(follow)"`
 }
 
+func IsFollowing(userID, followID int64) bool {
+	has, _ := x.Get(&Follow{UserID: userID, FollowID: followID})
+	return has
+}
+
 // FollowUser marks someone be another's follower.
-func FollowUser(userId int64, followId int64) (err error) {
+func FollowUser(userID, followID int64) (err error) {
+	if userID == followID || IsFollowing(userID, followID) {
+		return nil
+	}
+
 	sess := x.NewSession()
-	defer sess.Close()
-	sess.Begin()
-
-	if _, err = sess.Insert(&Follow{UserID: userId, FollowID: followId}); err != nil {
-		sess.Rollback()
+	defer sessionRelease(sess)
+	if err = sess.Begin(); err != nil {
 		return err
 	}
 
-	rawSql := "UPDATE `user` SET num_followers = num_followers + 1 WHERE id = ?"
-	if _, err = sess.Exec(rawSql, followId); err != nil {
-		sess.Rollback()
+	if _, err = sess.Insert(&Follow{UserID: userID, FollowID: followID}); err != nil {
 		return err
 	}
 
-	rawSql = "UPDATE `user` SET num_followings = num_followings + 1 WHERE id = ?"
-	if _, err = sess.Exec(rawSql, userId); err != nil {
-		sess.Rollback()
+	if _, err = sess.Exec("UPDATE `user` SET num_followers = num_followers + 1 WHERE id = ?", followID); err != nil {
+		return err
+	}
+
+	if _, err = sess.Exec("UPDATE `user` SET num_following = num_following + 1 WHERE id = ?", userID); err != nil {
 		return err
 	}
 	return sess.Commit()
 }
 
-// UnFollowUser unmarks someone be another's follower.
-func UnFollowUser(userId int64, unFollowId int64) (err error) {
-	session := x.NewSession()
-	defer session.Close()
-	session.Begin()
+// UnfollowUser unmarks someone be another's follower.
+func UnfollowUser(userID, followID int64) (err error) {
+	if userID == followID || !IsFollowing(userID, followID) {
+		return nil
+	}
 
-	if _, err = session.Delete(&Follow{UserID: userId, FollowID: unFollowId}); err != nil {
-		session.Rollback()
+	sess := x.NewSession()
+	defer sessionRelease(sess)
+	if err = sess.Begin(); err != nil {
 		return err
 	}
 
-	rawSql := "UPDATE `user` SET num_followers = num_followers - 1 WHERE id = ?"
-	if _, err = session.Exec(rawSql, unFollowId); err != nil {
-		session.Rollback()
+	if _, err = sess.Delete(&Follow{UserID: userID, FollowID: followID}); err != nil {
 		return err
 	}
 
-	rawSql = "UPDATE `user` SET num_followings = num_followings - 1 WHERE id = ?"
-	if _, err = session.Exec(rawSql, userId); err != nil {
-		session.Rollback()
-		return err
-	}
-	return session.Commit()
-}
-
-func UpdateMentions(userNames []string, issueId int64) error {
-	for i := range userNames {
-		userNames[i] = strings.ToLower(userNames[i])
-	}
-	users := make([]*User, 0, len(userNames))
-
-	if err := x.Where("lower_name IN (?)", strings.Join(userNames, "\",\"")).OrderBy("lower_name ASC").Find(&users); err != nil {
+	if _, err = sess.Exec("UPDATE `user` SET num_followers = num_followers - 1 WHERE id = ?", followID); err != nil {
 		return err
 	}
 
-	ids := make([]int64, 0, len(userNames))
-	for _, user := range users {
-		ids = append(ids, user.Id)
-		if !user.IsOrganization() {
-			continue
-		}
-
-		if user.NumMembers == 0 {
-			continue
-		}
-
-		tempIds := make([]int64, 0, user.NumMembers)
-		orgUsers, err := GetOrgUsersByOrgId(user.Id)
-		if err != nil {
-			return err
-		}
-
-		for _, orgUser := range orgUsers {
-			tempIds = append(tempIds, orgUser.ID)
-		}
-
-		ids = append(ids, tempIds...)
-	}
-
-	if err := UpdateIssueUsersByMentions(ids, issueId); err != nil {
+	if _, err = sess.Exec("UPDATE `user` SET num_following = num_following - 1 WHERE id = ?", userID); err != nil {
 		return err
 	}
-
-	return nil
+	return sess.Commit()
 }

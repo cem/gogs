@@ -14,6 +14,7 @@ import (
 	"github.com/gogits/gogs/modules/auth"
 	"github.com/gogits/gogs/modules/base"
 	"github.com/gogits/gogs/modules/log"
+	"github.com/gogits/gogs/modules/mailer"
 	"github.com/gogits/gogs/modules/middleware"
 	"github.com/gogits/gogs/modules/setting"
 )
@@ -60,6 +61,8 @@ func NewUser(ctx *middleware.Context) {
 		return
 	}
 	ctx.Data["Sources"] = sources
+
+	ctx.Data["CanSendEmail"] = setting.MailService != nil
 	ctx.HTML(200, USER_NEW)
 }
 
@@ -75,6 +78,8 @@ func NewUserPost(ctx *middleware.Context, form auth.AdminCrateUserForm) {
 	}
 	ctx.Data["Sources"] = sources
 
+	ctx.Data["CanSendEmail"] = setting.MailService != nil
+
 	if ctx.HasError() {
 		ctx.HTML(200, USER_NEW)
 		return
@@ -85,7 +90,7 @@ func NewUserPost(ctx *middleware.Context, form auth.AdminCrateUserForm) {
 		Email:     form.Email,
 		Passwd:    form.Password,
 		IsActive:  true,
-		LoginType: models.PLAIN,
+		LoginType: models.LOGIN_PLAIN,
 	}
 
 	if len(form.LoginType) > 0 {
@@ -116,7 +121,12 @@ func NewUserPost(ctx *middleware.Context, form auth.AdminCrateUserForm) {
 		}
 		return
 	}
-	log.Trace("Account created by admin(%s): %s", ctx.User.Name, u.Name)
+	log.Trace("Account created by admin (%s): %s", ctx.User.Name, u.Name)
+
+	// Send e-mail notification.
+	if form.SendNotify && setting.MailService != nil {
+		mailer.SendRegisterNotifyMail(ctx.Context, u)
+	}
 
 	ctx.Flash.Success(ctx.Tr("admin.users.new_success", u.Name))
 	ctx.Redirect(setting.AppSubUrl + "/admin/users/" + com.ToStr(u.Id))
@@ -200,9 +210,11 @@ func EditUserPost(ctx *middleware.Context, form auth.AdminEditUserForm) {
 	u.Email = form.Email
 	u.Website = form.Website
 	u.Location = form.Location
+	u.MaxRepoCreation = form.MaxRepoCreation
 	u.IsActive = form.Active
 	u.IsAdmin = form.Admin
 	u.AllowGitHook = form.AllowGitHook
+	u.AllowImportLocal = form.AllowImportLocal
 
 	if err := models.UpdateUser(u); err != nil {
 		if models.IsErrEmailAlreadyUsed(err) {
@@ -213,7 +225,7 @@ func EditUserPost(ctx *middleware.Context, form auth.AdminEditUserForm) {
 		}
 		return
 	}
-	log.Trace("Account profile updated by admin(%s): %s", ctx.User.Name, u.Name)
+	log.Trace("Account profile updated by admin (%s): %s", ctx.User.Name, u.Name)
 
 	ctx.Flash.Success(ctx.Tr("admin.users.update_profile_success"))
 	ctx.Redirect(setting.AppSubUrl + "/admin/users/" + ctx.Params(":userid"))
@@ -243,7 +255,7 @@ func DeleteUser(ctx *middleware.Context) {
 		}
 		return
 	}
-	log.Trace("Account deleted by admin(%s): %s", ctx.User.Name, u.Name)
+	log.Trace("Account deleted by admin (%s): %s", ctx.User.Name, u.Name)
 
 	ctx.Flash.Success(ctx.Tr("admin.users.deletion_success"))
 	ctx.JSON(200, map[string]interface{}{

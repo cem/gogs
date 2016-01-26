@@ -8,22 +8,29 @@ import (
 	"bytes"
 	"io/ioutil"
 	"path"
-	"path/filepath"
 	"strings"
+
+	"github.com/Unknwon/paginater"
+
+	"github.com/gogits/git-module"
 
 	"github.com/gogits/gogs/models"
 	"github.com/gogits/gogs/modules/base"
-	"github.com/gogits/gogs/modules/git"
 	"github.com/gogits/gogs/modules/log"
 	"github.com/gogits/gogs/modules/middleware"
+	"github.com/gogits/gogs/modules/template"
 )
 
 const (
-	HOME base.TplName = "repo/home"
+	HOME     base.TplName = "repo/home"
+	WATCHERS base.TplName = "repo/watchers"
+	FORKS    base.TplName = "repo/forks"
 )
 
 func Home(ctx *middleware.Context) {
 	ctx.Data["Title"] = ctx.Repo.Repository.Name
+	ctx.Data["PageIsViewCode"] = true
+	ctx.Data["RequireHighlightJS"] = true
 
 	branchName := ctx.Repo.BranchName
 	userName := ctx.Repo.Owner.Name
@@ -31,20 +38,20 @@ func Home(ctx *middleware.Context) {
 
 	repoLink := ctx.Repo.RepoLink
 	branchLink := ctx.Repo.RepoLink + "/src/" + branchName
+	treeLink := branchLink
 	rawLink := ctx.Repo.RepoLink + "/raw/" + branchName
 
 	// Get tree path
 	treename := ctx.Repo.TreeName
 
-	if len(treename) > 0 && treename[len(treename)-1] == '/' {
-		ctx.Redirect(repoLink + "/src/" + branchName + "/" + treename[:len(treename)-1])
-		return
+	if len(treename) > 0 {
+		if treename[len(treename)-1] == '/' {
+			ctx.Redirect(repoLink + "/src/" + branchName + "/" + treename[:len(treename)-1])
+			return
+		}
+
+		treeLink += "/" + treename
 	}
-
-	ctx.Data["IsRepoToolbarSource"] = true
-
-	isViewBranch := ctx.Repo.IsBranch
-	ctx.Data["IsViewBranch"] = isViewBranch
 
 	treePath := treename
 	if len(treePath) != 0 {
@@ -52,7 +59,7 @@ func Home(ctx *middleware.Context) {
 	}
 
 	entry, err := ctx.Repo.Commit.GetTreeEntryByPath(treename)
-	if err != nil && err != git.ErrNotExist {
+	if err != nil && git.IsErrNotExist(err) {
 		ctx.Handle(404, "GetTreeEntryByPath", err)
 		return
 	}
@@ -72,11 +79,7 @@ func Home(ctx *middleware.Context) {
 			ctx.Data["FileSize"] = blob.Size()
 			ctx.Data["IsFile"] = true
 			ctx.Data["FileName"] = blob.Name()
-			ext := path.Ext(blob.Name())
-			if len(ext) > 0 {
-				ext = ext[1:]
-			}
-			ctx.Data["FileExt"] = ext
+			ctx.Data["HighlightClass"] = template.FileNameToHighlightClass(blob.Name())
 			ctx.Data["FileLink"] = rawLink + "/" + treename
 
 			buf := make([]byte, 1024)
@@ -98,9 +101,9 @@ func Home(ctx *middleware.Context) {
 				readmeExist := base.IsMarkdownFile(blob.Name()) || base.IsReadmeFile(blob.Name())
 				ctx.Data["ReadmeExist"] = readmeExist
 				if readmeExist {
-					ctx.Data["FileContent"] = string(base.RenderMarkdown(buf, branchLink))
+					ctx.Data["FileContent"] = string(base.RenderMarkdown(buf, path.Dir(treeLink), ctx.Repo.Repository.ComposeMetas()))
 				} else {
-					if err, content := base.ToUtf8WithErr(buf); err != nil {
+					if err, content := template.ToUtf8WithErr(buf); err != nil {
 						if err != nil {
 							log.Error(4, "Convert content encoding: %s", err)
 						}
@@ -119,45 +122,20 @@ func Home(ctx *middleware.Context) {
 			return
 		}
 
-		entries, err := tree.ListEntries(treename)
+		entries, err := tree.ListEntries()
 		if err != nil {
 			ctx.Handle(500, "ListEntries", err)
 			return
 		}
 		entries.Sort()
 
-		files := make([][]interface{}, 0, len(entries))
-		for _, te := range entries {
-			if te.Type != git.COMMIT {
-				c, err := ctx.Repo.Commit.GetCommitOfRelPath(filepath.Join(treePath, te.Name()))
-				if err != nil {
-					ctx.Handle(500, "GetCommitOfRelPath", err)
-					return
-				}
-				files = append(files, []interface{}{te, c})
-			} else {
-				sm, err := ctx.Repo.Commit.GetSubModule(path.Join(treename, te.Name()))
-				if err != nil {
-					ctx.Handle(500, "GetSubModule", err)
-					return
-				}
-				smUrl := ""
-				if sm != nil {
-					smUrl = sm.Url
-				}
-
-				c, err := ctx.Repo.Commit.GetCommitOfRelPath(filepath.Join(treePath, te.Name()))
-				if err != nil {
-					ctx.Handle(500, "GetCommitOfRelPath", err)
-					return
-				}
-				files = append(files, []interface{}{te, git.NewSubModuleFile(c, smUrl, te.Id.String())})
-			}
+		ctx.Data["Files"], err = entries.GetCommitsInfo(ctx.Repo.Commit, treePath)
+		if err != nil {
+			ctx.Handle(500, "GetCommitsInfo", err)
+			return
 		}
-		ctx.Data["Files"] = files
 
 		var readmeFile *git.Blob
-
 		for _, f := range entries {
 			if f.IsDir() || !base.IsReadmeFile(f.Name()) {
 				continue
@@ -171,7 +149,7 @@ func Home(ctx *middleware.Context) {
 			ctx.Data["ReadmeInList"] = true
 			ctx.Data["ReadmeExist"] = true
 			if dataRc, err := readmeFile.Data(); err != nil {
-				ctx.Handle(404, "repo.SinglereadmeFile.LookupBlob", err)
+				ctx.Handle(404, "repo.SinglereadmeFile.Data", err)
 				return
 			} else {
 
@@ -191,7 +169,7 @@ func Home(ctx *middleware.Context) {
 					buf = append(buf, d...)
 					switch {
 					case base.IsMarkdownFile(readmeFile.Name()):
-						buf = base.RenderMarkdown(buf, branchLink)
+						buf = base.RenderMarkdown(buf, treeLink, ctx.Repo.Repository.ComposeMetas())
 					default:
 						buf = bytes.Replace(buf, []byte("\n"), []byte(`<br>`), -1)
 					}
@@ -202,9 +180,9 @@ func Home(ctx *middleware.Context) {
 
 		lastCommit := ctx.Repo.Commit
 		if len(treePath) > 0 {
-			c, err := ctx.Repo.Commit.GetCommitOfRelPath(treePath)
+			c, err := ctx.Repo.Commit.GetCommitByPath(treePath)
 			if err != nil {
-				ctx.Handle(500, "GetCommitOfRelPath", err)
+				ctx.Handle(500, "GetCommitByPath", err)
 				return
 			}
 			lastCommit = c
@@ -237,4 +215,56 @@ func Home(ctx *middleware.Context) {
 	ctx.Data["TreePath"] = treePath
 	ctx.Data["BranchLink"] = branchLink
 	ctx.HTML(200, HOME)
+}
+
+func RenderUserCards(ctx *middleware.Context, total int, getter func(page int) ([]*models.User, error), tpl base.TplName) {
+	page := ctx.QueryInt("page")
+	if page <= 0 {
+		page = 1
+	}
+	pager := paginater.New(total, models.ItemsPerPage, page, 5)
+	ctx.Data["Page"] = pager
+
+	items, err := getter(pager.Current())
+	if err != nil {
+		ctx.Handle(500, "getter", err)
+		return
+	}
+	ctx.Data["Cards"] = items
+
+	ctx.HTML(200, tpl)
+}
+
+func Watchers(ctx *middleware.Context) {
+	ctx.Data["Title"] = ctx.Tr("repo.watchers")
+	ctx.Data["CardsTitle"] = ctx.Tr("repo.watchers")
+	ctx.Data["PageIsWatchers"] = true
+	RenderUserCards(ctx, ctx.Repo.Repository.NumWatches, ctx.Repo.Repository.GetWatchers, WATCHERS)
+}
+
+func Stars(ctx *middleware.Context) {
+	ctx.Data["Title"] = ctx.Tr("repo.stargazers")
+	ctx.Data["CardsTitle"] = ctx.Tr("repo.stargazers")
+	ctx.Data["PageIsStargazers"] = true
+	RenderUserCards(ctx, ctx.Repo.Repository.NumStars, ctx.Repo.Repository.GetStargazers, WATCHERS)
+}
+
+func Forks(ctx *middleware.Context) {
+	ctx.Data["Title"] = ctx.Tr("repos.forks")
+
+	forks, err := ctx.Repo.Repository.GetForks()
+	if err != nil {
+		ctx.Handle(500, "GetForks", err)
+		return
+	}
+
+	for _, fork := range forks {
+		if err = fork.GetOwner(); err != nil {
+			ctx.Handle(500, "GetOwner", err)
+			return
+		}
+	}
+	ctx.Data["Forks"] = forks
+
+	ctx.HTML(200, FORKS)
 }

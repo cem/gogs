@@ -108,7 +108,10 @@ func CreateOrganization(org, owner *User) (err error) {
 
 	org.LowerName = strings.ToLower(org.Name)
 	org.FullName = org.Name
+	org.Rands = GetUserSalt()
+	org.Salt = GetUserSalt()
 	org.UseCustomAvatar = true
+	org.MaxRepoCreation = -1
 	org.NumTeams = 1
 	org.NumMembers = 1
 
@@ -184,11 +187,10 @@ func CountOrganizations() int64 {
 	return count
 }
 
-// GetOrganizations returns given number of organizations with offset.
-func GetOrganizations(num, offset int) ([]*User, error) {
-	orgs := make([]*User, 0, num)
-	err := x.Limit(num, offset).Where("type=1").Asc("id").Find(&orgs)
-	return orgs, err
+// Organizations returns number of organizations in given page.
+func Organizations(page, pageSize int) ([]*User, error) {
+	orgs := make([]*User, 0, pageSize)
+	return orgs, x.Limit(pageSize, (page-1)*pageSize).Where("type=1").Asc("id").Find(&orgs)
 }
 
 // DeleteOrganization completely and permanently deletes everything of organization.
@@ -272,10 +274,15 @@ func GetOwnedOrgsByUserIDDesc(userID int64, desc string) ([]*User, error) {
 	return getOwnedOrgsByUserID(sess.Desc(desc), userID)
 }
 
-// GetOrgUsersByUserId returns all organization-user relations by user ID.
-func GetOrgUsersByUserId(uid int64) ([]*OrgUser, error) {
+// GetOrgUsersByUserID returns all organization-user relations by user ID.
+func GetOrgUsersByUserID(uid int64, all bool) ([]*OrgUser, error) {
 	ous := make([]*OrgUser, 0, 10)
-	err := x.Where("uid=?", uid).Find(&ous)
+	sess := x.Where("uid=?", uid)
+	if !all {
+		// Only show public organizations
+		sess.And("is_public=?", true)
+	}
+	err := sess.Find(&ous)
 	return ous, err
 }
 

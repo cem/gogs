@@ -7,8 +7,8 @@ package auth
 import (
 	"mime/multipart"
 
-	"github.com/Unknwon/macaron"
-	"github.com/macaron-contrib/binding"
+	"github.com/go-macaron/binding"
+	"gopkg.in/macaron.v1"
 )
 
 type InstallForm struct {
@@ -30,7 +30,7 @@ type InstallForm struct {
 
 	SMTPHost        string
 	SMTPFrom        string
-	SMTPEmail       string `binding:"OmitEmpty;Email;MaxSize(50)" locale:"install.mailer_user"`
+	SMTPEmail       string `binding:"OmitEmpty;Email;MaxSize(254)" locale:"install.mailer_user"`
 	SMTPPasswd      string
 	RegisterConfirm bool
 	MailNotify      bool
@@ -44,7 +44,7 @@ type InstallForm struct {
 	AdminName          string `binding:"OmitEmpty;AlphaDashDot;MaxSize(30)" locale:"install.admin_name"`
 	AdminPasswd        string `binding:"OmitEmpty;MaxSize(255)" locale:"install.admin_password"`
 	AdminConfirmPasswd string
-	AdminEmail         string `binding:"OmitEmpty;Email;MaxSize(50)" locale:"install.admin_email"`
+	AdminEmail         string `binding:"OmitEmpty;MinSize(3);MaxSize(254);Include(@)" locale:"install.admin_email"`
 }
 
 func (f *InstallForm) Validate(ctx *macaron.Context, errs binding.Errors) binding.Errors {
@@ -87,12 +87,12 @@ func (f *SignInForm) Validate(ctx *macaron.Context, errs binding.Errors) binding
 //         \/         \/                                   \/        \/        \/
 
 type UpdateProfileForm struct {
-	Name     string `binding:"Required;MaxSize(35)"`
+	Name     string `binding:"OmitEmpty;MaxSize(35)"`
 	FullName string `binding:"MaxSize(100)"`
 	Email    string `binding:"Required;Email;MaxSize(254)"`
 	Website  string `binding:"Url;MaxSize(100)"`
 	Location string `binding:"MaxSize(50)"`
-	Gravatar string `binding:"Required;Email;MaxSize(254)"`
+	Gravatar string `binding:"OmitEmpty;Email;MaxSize(254)"`
 }
 
 func (f *UpdateProfileForm) Validate(ctx *macaron.Context, errs binding.Errors) binding.Errors {

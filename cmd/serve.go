@@ -5,6 +5,7 @@
 package cmd
 
 import (
+	"crypto/tls"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,6 +17,7 @@ import (
 	"github.com/codegangsta/cli"
 
 	"github.com/gogits/gogs/models"
+	"github.com/gogits/gogs/modules/base"
 	"github.com/gogits/gogs/modules/httplib"
 	"github.com/gogits/gogs/modules/log"
 	"github.com/gogits/gogs/modules/setting"
@@ -32,7 +34,7 @@ var CmdServ = cli.Command{
 	Description: `Serv provide access auth for repositories`,
 	Action:      runServ,
 	Flags: []cli.Flag{
-		cli.StringFlag{"config, c", "custom/conf/app.ini", "Custom configuration file path", ""},
+		stringFlag("config, c", "custom/conf/app.ini", "Custom configuration file path"),
 	},
 }
 
@@ -64,7 +66,7 @@ func parseCmd(cmd string) (string, string) {
 }
 
 var (
-	COMMANDS = map[string]models.AccessMode{
+	allowedCommands = map[string]models.AccessMode{
 		"git-upload-pack":    models.ACCESS_MODE_READ,
 		"git-upload-archive": models.ACCESS_MODE_READ,
 		"git-receive-pack":   models.ACCESS_MODE_WRITE,
@@ -73,7 +75,56 @@ var (
 
 func fail(userMessage, logMessage string, args ...interface{}) {
 	fmt.Fprintln(os.Stderr, "Gogs:", userMessage)
-	log.GitLogger.Fatal(3, logMessage, args...)
+
+	if len(logMessage) > 0 {
+		if !setting.ProdMode {
+			fmt.Fprintf(os.Stderr, logMessage+"\n", args...)
+		}
+		log.GitLogger.Fatal(3, logMessage, args...)
+		return
+	}
+
+	log.GitLogger.Close()
+	os.Exit(1)
+}
+
+func handleUpdateTask(uuid string, user, repoUser *models.User, reponame string, isWiki bool) {
+	task, err := models.GetUpdateTaskByUUID(uuid)
+	if err != nil {
+		if models.IsErrUpdateTaskNotExist(err) {
+			log.GitLogger.Trace("No update task is presented: %s", uuid)
+			return
+		}
+		log.GitLogger.Fatal(2, "GetUpdateTaskByUUID: %v", err)
+	} else if err = models.DeleteUpdateTaskByUUID(uuid); err != nil {
+		log.GitLogger.Fatal(2, "DeleteUpdateTaskByUUID: %v", err)
+	}
+
+	if isWiki {
+		return
+	}
+
+	if err = models.Update(task.RefName, task.OldCommitID, task.NewCommitID,
+		user.Name, repoUser.Name, reponame, user.Id); err != nil {
+		log.GitLogger.Error(2, "Update: %v", err)
+	}
+
+	// Ask for running deliver hook and test pull request tasks.
+	reqURL := setting.LocalURL + repoUser.Name + "/" + reponame + "/tasks/trigger?branch=" +
+		strings.TrimPrefix(task.RefName, "refs/heads/") + "&secret=" + base.EncodeMD5(repoUser.Salt)
+	log.GitLogger.Trace("Trigger task: %s", reqURL)
+
+	resp, err := httplib.Head(reqURL).SetTLSClientConfig(&tls.Config{
+		InsecureSkipVerify: true,
+	}).Response()
+	if err == nil {
+		resp.Body.Close()
+		if resp.StatusCode/100 != 2 {
+			log.GitLogger.Error(2, "Fail to trigger task: not 2xx response code")
+		}
+	} else {
+		log.GitLogger.Error(2, "Fail to trigger task: %v", err)
+	}
 }
 
 func runServ(c *cli.Context) {
@@ -94,33 +145,44 @@ func runServ(c *cli.Context) {
 	}
 
 	verb, args := parseCmd(cmd)
-	repoPath := strings.Trim(args, "'")
+	repoPath := strings.ToLower(strings.Trim(args, "'"))
 	rr := strings.SplitN(repoPath, "/", 2)
 	if len(rr) != 2 {
 		fail("Invalid repository path", "Invalid repository path: %v", args)
 	}
-	repoUserName := rr[0]
-	repoName := strings.TrimSuffix(rr[1], ".git")
+	username := strings.ToLower(rr[0])
+	reponame := strings.ToLower(strings.TrimSuffix(rr[1], ".git"))
 
-	repoUser, err := models.GetUserByName(repoUserName)
-	if err != nil {
-		if models.IsErrUserNotExist(err) {
-			fail("Repository owner does not exist", "Unregistered owner: %s", repoUserName)
-		}
-		fail("Internal error", "Failed to get repository owner(%s): %v", repoUserName, err)
+	isWiki := false
+	if strings.HasSuffix(reponame, ".wiki") {
+		isWiki = true
+		reponame = reponame[:len(reponame)-5]
 	}
 
-	repo, err := models.GetRepositoryByName(repoUser.Id, repoName)
+	repoUser, err := models.GetUserByName(username)
+	if err != nil {
+		if models.IsErrUserNotExist(err) {
+			fail("Repository owner does not exist", "Unregistered owner: %s", username)
+		}
+		fail("Internal error", "Failed to get repository owner (%s): %v", username, err)
+	}
+
+	repo, err := models.GetRepositoryByName(repoUser.Id, reponame)
 	if err != nil {
 		if models.IsErrRepoNotExist(err) {
-			fail(_ACCESS_DENIED_MESSAGE, "Repository does not exist: %s/%s", repoUser.Name, repoName)
+			fail(_ACCESS_DENIED_MESSAGE, "Repository does not exist: %s/%s", repoUser.Name, reponame)
 		}
 		fail("Internal error", "Failed to get repository: %v", err)
 	}
 
-	requestedMode, has := COMMANDS[verb]
+	requestedMode, has := allowedCommands[verb]
 	if !has {
 		fail("Unknown git command", "Unknown git command %s", verb)
+	}
+
+	// Prohibit push to mirror repositories.
+	if requestedMode > models.ACCESS_MODE_READ && repo.IsMirror {
+		fail("mirror repository is read-only", "")
 	}
 
 	// Allow anonymous clone for public repositories.
@@ -131,12 +193,12 @@ func runServ(c *cli.Context) {
 	if requestedMode == models.ACCESS_MODE_WRITE || repo.IsPrivate {
 		keys := strings.Split(c.Args()[0], "-")
 		if len(keys) != 2 {
-			fail("Key ID format error", "Invalid key ID: %s", c.Args()[0])
+			fail("Key ID format error", "Invalid key argument: %s", c.Args()[0])
 		}
 
 		key, err := models.GetPublicKeyByID(com.StrTo(keys[1]).MustInt64())
 		if err != nil {
-			fail("Key ID format error", "Invalid key ID[%s]: %v", c.Args()[0], err)
+			fail("Invalid key ID", "Invalid key ID[%s]: %v", c.Args()[0], err)
 		}
 		keyID = key.ID
 
@@ -147,7 +209,7 @@ func runServ(c *cli.Context) {
 			}
 			// Check if this deploy key belongs to current repository.
 			if !models.HasDeployKey(key.ID, repo.ID) {
-				fail("Key access denied", "Key access denied: %d-%d", key.ID, repo.ID)
+				fail("Key access denied", "Deploy key access denied: [key_id: %d, repo_id: %d]", key.ID, repo.ID)
 			}
 
 			// Update deploy key activity.
@@ -161,7 +223,7 @@ func runServ(c *cli.Context) {
 				fail("Internal error", "UpdateDeployKey: %v", err)
 			}
 		} else {
-			user, err = models.GetUserByKeyId(key.ID)
+			user, err = models.GetUserByKeyID(key.ID)
 			if err != nil {
 				fail("internal error", "Failed to get user by key ID(%d): %v", keyID, err)
 			}
@@ -184,6 +246,11 @@ func runServ(c *cli.Context) {
 	uuid := uuid.NewV4().String()
 	os.Setenv("uuid", uuid)
 
+	// Special handle for Windows.
+	if setting.IsWindows {
+		verb = strings.Replace(verb, "-", " ", 1)
+	}
+
 	var gitcmd *exec.Cmd
 	verbs := strings.Split(verb, " ")
 	if len(verbs) == 2 {
@@ -200,28 +267,7 @@ func runServ(c *cli.Context) {
 	}
 
 	if requestedMode == models.ACCESS_MODE_WRITE {
-		tasks, err := models.GetUpdateTasksByUuid(uuid)
-		if err != nil {
-			log.GitLogger.Fatal(2, "GetUpdateTasksByUuid: %v", err)
-		}
-
-		for _, task := range tasks {
-			err = models.Update(task.RefName, task.OldCommitId, task.NewCommitId,
-				user.Name, repoUserName, repoName, user.Id)
-			if err != nil {
-				log.GitLogger.Error(2, "Failed to update: %v", err)
-			}
-		}
-
-		if err = models.DelUpdateTasksByUuid(uuid); err != nil {
-			log.GitLogger.Fatal(2, "DelUpdateTasksByUuid: %v", err)
-		}
-	}
-
-	// Send deliver hook request.
-	resp, err := httplib.Head(setting.AppUrl + setting.AppSubUrl + repoUserName + "/" + repoName + "/hooks/trigger").Response()
-	if err == nil {
-		resp.Body.Close()
+		handleUpdateTask(uuid, user, repoUser, reponame, isWiki)
 	}
 
 	// Update user key activity.
