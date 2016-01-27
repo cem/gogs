@@ -1,39 +1,39 @@
 {{template "base/head" .}}
-<div id="repo-wrapper" class="repo-bare">
-    <div id="repo-header" class="clear">
-        <div class="container clear">
-            <h1 id="repo-header-name" class="left public">
-                <i class="mega-octicon octicon-{{if .Repository.IsPrivate}}lock{{else}}repo{{end}}"></i>
-                <a class="author" href="{{AppSubUrl}}/{{.Repository.Owner.Name}}">{{.Repository.Owner.Name}}</a>
-                <span class="divider">/</span>
-                <a class="repo text-bold" href="{{.RepoLink}}">{{.Repository.Name}}</a>
-            </h1>
-        </div>
-    </div>
-    <div id="repo-content" class="clear container">
-        <div id="repo-bare">
-            <div id="repo-bare-start" class="panel panel-radius">
-                <div class="panel-header">
-                    <a class="btn btn-small btn-black btn-header btn-radius right" href="{{.RepoLink}}/settings">{{.i18n.Tr "repo.settings"}}</a>
-                    <strong>{{.i18n.Tr "repo.quick_guide"}}</strong>
-                </div>
-                <div class="panel-content">
-                    {{template "repo/offer_template" $.RepoRelPath}}
-                    <div id="repo-clone" class="clear text-center">
-                        <h2>First, add an authorization key to git:</h2>
-                        <iframe class="offer-template offer-save"></iframe>
-                    </div>
-                    <div id="repo-bare-cmd" class="text-center">
-                        <h2>...then, you can clone this empty repository:</h2>
-                        <iframe class="offer-template offer-clone"></iframe>
-                    </div>
-                    <div id="repo-bare-remote" class="text-center">
-                        <h2>...or add as a remote to an existing repository on your computer:</h2>
-                        <iframe class="offer-template offer-remote"></iframe>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
+<div class="repository quickstart">
+	{{template "repo/header" .}}
+	<div class="ui container">
+		<div class="ui grid">
+			<div class="sixteen wide column content">
+				{{template "base/alert" .}}
+				{{if .IsRepositoryAdmin}}
+					<h4 class="ui top attached header">
+						{{.i18n.Tr "repo.quick_guide"}}
+						<div class="ui right">
+							<a class="ui black tiny button" href="{{.RepoLink}}/settings">{{.i18n.Tr "repo.settings"}}</a>
+						</div>
+					</h4>
+					<div class="ui attached guide table segment">
+						
+					    {{template "repo/offer_template" $.RepoRelPath}}
+					    <div id="repo-clone" class="item">
+						<h3>First, add an authorization key to git:</h3>
+						<iframe class="offer-template offer-save"></iframe>
+					    </div>
+
+					    <div id="repo-bare-cmd" class="item">
+						<h3>...then, you can clone this empty repository:</h3>
+						<iframe class="offer-template offer-clone"></iframe>
+					    </div>
+
+					    <div id="repo-bare-remote" class="item">
+						<h3>...or add as a remote to an existing repository on your computer:</h3>
+						<iframe class="offer-template offer-remote"></iframe>
+					    </div>
+
+					{{end}}
+				</div>
+			</div>
+		</div>
+	</div>
 </div>
 {{template "base/footer" .}}
