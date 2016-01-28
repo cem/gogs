@@ -36,11 +36,21 @@
 				<div class="right fitted item">
 					<div class="ui action small input" id="clone-panel">
 
-						<div class="ui basic jump dropdown icon button">
-							<span style="padding: 0.5em 0;">Clone</span>
-							<div class="menu">
-								<div class="item" style="min-width: 500px;">
-									<p>Run the following commands to clone this repository:</p>
+						<div class="ui basic button sandstorm-clone-button">
+							<i class="cloud icon"></i>
+							Clone
+							<script>
+								$('.sandstorm-clone-button').click(function () {
+									$('.sandstorm-clone-modal').modal('show');
+								});
+							</script>
+						</div>
+
+						<div class="ui modal sandstorm-clone-modal">
+							<i class="close icon"></i>
+							<div class="content">
+								<div class="description">
+									<div class="ui header">Run the following commands to clone this repository:</div>
 									{{template "repo/offer_template" $.RepoRelPath}}
 									<iframe class="offer-template offer-save offer-clone"></iframe>
 								</div>
