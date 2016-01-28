@@ -35,18 +35,18 @@
 			{{if eq $n 0}}
 				<div class="right fitted item">
 					<div class="ui action small input" id="clone-panel">
-						<button class="ui blue basic clone button" id="repo-clone-https" data-link="{{.CloneLink.HTTPS}}">
-							{{if UseHTTPS}}HTTPS{{else}}HTTP{{end}}
-						</button>
-						{{if not $.DisableSSH}}
-							<button class="ui basic clone button" id="repo-clone-ssh" data-link="{{.CloneLink.SSH}}">
-								SSH
-							</button>
-						{{end}}
-						<input id="repo-clone-url" value="{{$.CloneLink.HTTPS}}" readonly>
-						<button class="ui basic icon button poping up clipboard" id="clipboard-btn" data-original="{{.i18n.Tr "repo.copy_link"}}" data-success="{{.i18n.Tr "repo.copy_link_success"}}" data-error="{{.i18n.Tr "repo.copy_link_error"}}" data-content="{{.i18n.Tr "repo.copy_link"}}" data-variation="inverted tiny" data-clipboard-target="#repo-clone-url">
-							<i class="octicon octicon-clippy"></i>
-						</button>
+
+						<div class="ui basic jump dropdown icon button">
+							<span style="padding: 0.5em 0;">Clone</span>
+							<div class="menu">
+								<div class="item" style="min-width: 500px;">
+									<p>Run the following commands to clone this repository:</p>
+									{{template "repo/offer_template" $.RepoRelPath}}
+									<iframe class="offer-template offer-save offer-clone"></iframe>
+								</div>
+							</div>
+						</div>
+
 						<div class="ui basic jump dropdown icon button">
 							<i class="download icon"></i>
 							<div class="menu">
