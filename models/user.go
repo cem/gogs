@@ -52,12 +52,12 @@ var (
 
 // User represents the object of individual and member of organization.
 type User struct {
-	Id        int64
+	Id              int64
 	SandstormId     string `xorm:"CHAR(32) UNIQUE NOT NULL"`
 	SandstormAvatar string `xorm:"NOT NULL"`
-	LowerName string `xorm:"UNIQUE NOT NULL"`
-	Name      string `xorm:"UNIQUE NOT NULL"`
-	FullName  string
+	LowerName       string `xorm:"UNIQUE NOT NULL"`
+	Name            string `xorm:"UNIQUE NOT NULL"`
+	FullName        string
 	// Email is the primary email address (to be used for communication)
 	Email       string `xorm:"NOT NULL"`
 	Passwd      string `xorm:"NOT NULL"`
@@ -230,9 +230,43 @@ func (u *User) GenerateRandomAvatar() error {
 	return nil
 }
 
+func (u *User) RelAvatarLink() string {
+	defaultImgUrl := "/img/avatar_default.jpg"
+	if u.Id == -1 {
+		return defaultImgUrl
+	}
+
+	switch {
+	case u.UseCustomAvatar:
+		if !com.IsExist(u.CustomAvatarPath()) {
+			return defaultImgUrl
+		}
+		return "/avatars/" + com.ToStr(u.Id)
+	case setting.DisableGravatar, setting.OfflineMode:
+		if !com.IsExist(u.CustomAvatarPath()) {
+			if err := u.GenerateRandomAvatar(); err != nil {
+				log.Error(3, "GenerateRandomAvatar: %v", err)
+			}
+		}
+
+		return "/avatars/" + com.ToStr(u.Id)
+	case setting.Service.EnableCacheAvatar:
+		return "/avatar/" + u.Avatar
+	}
+	return setting.GravatarSource + u.Avatar
+}
+
 // AvatarLink returns user gravatar link.
 func (u *User) AvatarLink() string {
-	return u.SandstormAvatar
+	if u.SandstormAvatar != "" {
+		return u.SandstormAvatar
+	}
+
+	link := u.RelAvatarLink()
+	if link[0] == '/' && link[1] != '/' {
+		return setting.AppSubUrl + link
+	}
+	return link
 }
 
 // User.GetFollwoers returns range of user's followers.
