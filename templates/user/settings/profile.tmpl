@@ -46,27 +46,6 @@
 							<button class="ui green button">{{$.i18n.Tr "settings.update_profile"}}</button>
 						</div>
 					</form>
-
-					<div class="ui divider"></div>
-
-					<form class="ui form" action="{{.Link}}/avatar" method="post" enctype="multipart/form-data">
-						{{.CsrfTokenHtml}}
-						<div class="inline field">
-							<label>{{.i18n.Tr "settings.enable_custom_avatar"}}</label>
-							<div class="ui checkbox">
-								<input name="enable" type="checkbox" {{if .SignedUser.UseCustomAvatar}}checked{{end}}>
-								<label>{{.i18n.Tr "settings.enable_custom_avatar_helper"}}</label>
-							</div>
-						</div>
-						<div class="inline field">
-							<label for="avatar">{{.i18n.Tr "settings.choose_new_avatar"}}</label>
-							<input name="avatar" type="file" >
-						</div>
-
-						<div class="field">
-							<button class="ui green button">{{$.i18n.Tr "settings.update_avatar"}}</button>
-						</div>
-					</form>
 				</div>
 			</div>
 		</div>
