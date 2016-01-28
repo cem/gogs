@@ -31,9 +31,10 @@ func CreatePost(ctx *middleware.Context, form auth.CreateOrgForm) {
 	}
 
 	org := &models.User{
-		Name:     form.OrgName,
-		IsActive: true,
-		Type:     models.ORGANIZATION,
+		Name:        form.OrgName,
+		SandstormId: form.OrgName,
+		IsActive:    true,
+		Type:        models.ORGANIZATION,
 	}
 
 	if err := models.CreateOrganization(org, ctx.User); err != nil {
