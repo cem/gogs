@@ -8,13 +8,13 @@ import (
 	api "github.com/gogits/go-gogs-client"
 
 	"github.com/gogits/gogs/models"
-	"github.com/gogits/gogs/modules/middleware"
+	"github.com/gogits/gogs/modules/context"
 	"github.com/gogits/gogs/routers/api/v1/convert"
 	"github.com/gogits/gogs/routers/api/v1/user"
 )
 
 // https://github.com/gogits/go-gogs-client/wiki/Administration-Organizations#create-a-new-organization
-func CreateOrg(ctx *middleware.Context, form api.CreateOrgOption) {
+func CreateOrg(ctx *context.APIContext, form api.CreateOrgOption) {
 	u := user.GetUserByParams(ctx)
 	if ctx.Written() {
 		return
@@ -27,18 +27,18 @@ func CreateOrg(ctx *middleware.Context, form api.CreateOrgOption) {
 		Website:     form.Website,
 		Location:    form.Location,
 		IsActive:    true,
-		Type:        models.ORGANIZATION,
+		Type:        models.USER_TYPE_ORGANIZATION,
 	}
 	if err := models.CreateOrganization(org, u); err != nil {
 		if models.IsErrUserAlreadyExist(err) ||
 			models.IsErrNameReserved(err) ||
 			models.IsErrNamePatternNotAllowed(err) {
-			ctx.APIError(422, "CreateOrganization", err)
+			ctx.Error(422, "CreateOrganization", err)
 		} else {
-			ctx.APIError(500, "CreateOrganization", err)
+			ctx.Error(500, "CreateOrganization", err)
 		}
 		return
 	}
 
-	ctx.JSON(201, convert.ToApiOrganization(org))
+	ctx.JSON(201, convert.ToOrganization(org))
 }

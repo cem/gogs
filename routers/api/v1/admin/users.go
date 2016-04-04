@@ -8,15 +8,15 @@ import (
 	api "github.com/gogits/go-gogs-client"
 
 	"github.com/gogits/gogs/models"
+	"github.com/gogits/gogs/modules/context"
 	"github.com/gogits/gogs/modules/log"
 	"github.com/gogits/gogs/modules/mailer"
-	"github.com/gogits/gogs/modules/middleware"
 	"github.com/gogits/gogs/modules/setting"
 	"github.com/gogits/gogs/routers/api/v1/convert"
 	"github.com/gogits/gogs/routers/api/v1/user"
 )
 
-func parseLoginSource(ctx *middleware.Context, u *models.User, sourceID int64, loginName string) {
+func parseLoginSource(ctx *context.APIContext, u *models.User, sourceID int64, loginName string) {
 	if sourceID == 0 {
 		return
 	}
@@ -24,9 +24,9 @@ func parseLoginSource(ctx *middleware.Context, u *models.User, sourceID int64, l
 	source, err := models.GetLoginSourceByID(sourceID)
 	if err != nil {
 		if models.IsErrAuthenticationNotExist(err) {
-			ctx.APIError(422, "", err)
+			ctx.Error(422, "", err)
 		} else {
-			ctx.APIError(500, "GetLoginSourceByID", err)
+			ctx.Error(500, "GetLoginSourceByID", err)
 		}
 		return
 	}
@@ -37,7 +37,7 @@ func parseLoginSource(ctx *middleware.Context, u *models.User, sourceID int64, l
 }
 
 // https://github.com/gogits/go-gogs-client/wiki/Administration-Users#create-a-new-user
-func CreateUser(ctx *middleware.Context, form api.CreateUserOption) {
+func CreateUser(ctx *context.APIContext, form api.CreateUserOption) {
 	u := &models.User{
 		Name:      form.Username,
 		Email:     form.Email,
@@ -56,9 +56,9 @@ func CreateUser(ctx *middleware.Context, form api.CreateUserOption) {
 			models.IsErrEmailAlreadyUsed(err) ||
 			models.IsErrNameReserved(err) ||
 			models.IsErrNamePatternNotAllowed(err) {
-			ctx.APIError(422, "", err)
+			ctx.Error(422, "", err)
 		} else {
-			ctx.APIError(500, "CreateUser", err)
+			ctx.Error(500, "CreateUser", err)
 		}
 		return
 	}
@@ -66,14 +66,14 @@ func CreateUser(ctx *middleware.Context, form api.CreateUserOption) {
 
 	// Send e-mail notification.
 	if form.SendNotify && setting.MailService != nil {
-		mailer.SendRegisterNotifyMail(ctx.Context, u)
+		mailer.SendRegisterNotifyMail(ctx.Context.Context, u)
 	}
 
-	ctx.JSON(201, convert.ToApiUser(u))
+	ctx.JSON(201, convert.ToUser(u))
 }
 
 // https://github.com/gogits/go-gogs-client/wiki/Administration-Users#edit-an-existing-user
-func EditUser(ctx *middleware.Context, form api.EditUserOption) {
+func EditUser(ctx *context.APIContext, form api.EditUserOption) {
 	u := user.GetUserByParams(ctx)
 	if ctx.Written() {
 		return
@@ -110,19 +110,19 @@ func EditUser(ctx *middleware.Context, form api.EditUserOption) {
 
 	if err := models.UpdateUser(u); err != nil {
 		if models.IsErrEmailAlreadyUsed(err) {
-			ctx.APIError(422, "", err)
+			ctx.Error(422, "", err)
 		} else {
-			ctx.APIError(500, "UpdateUser", err)
+			ctx.Error(500, "UpdateUser", err)
 		}
 		return
 	}
 	log.Trace("Account profile updated by admin (%s): %s", ctx.User.Name, u.Name)
 
-	ctx.JSON(200, convert.ToApiUser(u))
+	ctx.JSON(200, convert.ToUser(u))
 }
 
 // https://github.com/gogits/go-gogs-client/wiki/Administration-Users#delete-a-user
-func DeleteUser(ctx *middleware.Context) {
+func DeleteUser(ctx *context.APIContext) {
 	u := user.GetUserByParams(ctx)
 	if ctx.Written() {
 		return
@@ -131,9 +131,9 @@ func DeleteUser(ctx *middleware.Context) {
 	if err := models.DeleteUser(u); err != nil {
 		if models.IsErrUserOwnRepos(err) ||
 			models.IsErrUserHasOrgs(err) {
-			ctx.APIError(422, "", err)
+			ctx.Error(422, "", err)
 		} else {
-			ctx.APIError(500, "DeleteUser", err)
+			ctx.Error(500, "DeleteUser", err)
 		}
 		return
 	}
@@ -143,7 +143,7 @@ func DeleteUser(ctx *middleware.Context) {
 }
 
 // https://github.com/gogits/go-gogs-client/wiki/Administration-Users#create-a-public-key-for-user
-func CreatePublicKey(ctx *middleware.Context, form api.CreateKeyOption) {
+func CreatePublicKey(ctx *context.APIContext, form api.CreateKeyOption) {
 	u := user.GetUserByParams(ctx)
 	if ctx.Written() {
 		return

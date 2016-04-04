@@ -13,13 +13,13 @@ import (
 	"github.com/Unknwon/com"
 	"github.com/go-macaron/binding"
 	"github.com/go-macaron/session"
+	gouuid "github.com/satori/go.uuid"
 	"gopkg.in/macaron.v1"
 
 	"github.com/gogits/gogs/models"
 	"github.com/gogits/gogs/modules/base"
 	"github.com/gogits/gogs/modules/log"
 	"github.com/gogits/gogs/modules/setting"
-	"github.com/gogits/gogs/modules/uuid"
 )
 
 func IsAPIPath(url string) bool {
@@ -125,7 +125,7 @@ func SignedInUser(ctx *macaron.Context, sess session.Store) (*models.User, bool)
 								SandstormId:     sandstormId,
 								SandstormAvatar: avatarLink,
 								Name:            handle + suffix,
-								Email:           uuid.NewV4().String() + "@localhost",
+								Email:           gouuid.NewV4().String() + "@localhost",
 								Passwd:          password,
 								IsActive:        true,
 							}
