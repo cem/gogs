@@ -86,6 +86,7 @@ code.wrap {
 }
 .following.bar .brand .ui.mini.image {
   width: 30px;
+  height: 30px;
 }
 .following.bar .top.menu a.item:hover,
 .following.bar .top.menu .dropdown.item:hover,
@@ -3208,7 +3209,7 @@ footer .ui.language .menu {
 .ui.user.list .item .description a:hover {
   text-decoration: underline;
 }
-.ui.mini.image {
+.ui.mini.image, .item > img {
   height: 18px;
 }
 .ui.small.image {
