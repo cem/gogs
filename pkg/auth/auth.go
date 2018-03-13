@@ -5,6 +5,7 @@
 package auth
 
 import (
+	"math/rand"
 	"strings"
 	"time"
 
@@ -92,30 +93,58 @@ func SignedInUser(ctx *macaron.Context, sess session.Store) (*models.User, bool)
 		if setting.Service.EnableReverseProxyAuth {
 			webAuthUser := ctx.Req.Header.Get(setting.ReverseProxyAuthUser)
 			if len(webAuthUser) > 0 {
-				u, err := models.GetUserByName(webAuthUser)
+				u, err := models.GetUserBySandstormID(webAuthUser)
 				if err != nil {
-					if !errors.IsUserNotExist(err) {
-						log.Error(4, "GetUserByName: %v", err)
+					if !models.IsErrSandstormUserNotExist(err) {
+						log.Error(4, "GetUserBySandstormID: %v", err)
 						return nil, false
 					}
 
 					// Check if enabled auto-registration.
 					if setting.Service.EnableReverseProxyAutoRegister {
-						u := &models.User{
-							Name:     webAuthUser,
-							Email:    gouuid.NewV4().String() + "@localhost",
-							Passwd:   webAuthUser,
-							IsActive: true,
+						handle := ctx.Req.Header.Get("X-Sandstorm-Preferred-Handle")
+						if len(handle) == 0 {
+							handle = "gogsuser"
 						}
-						if err = models.CreateUser(u); err != nil {
-							// FIXME: should I create a system notice?
-							log.Error(4, "CreateUser: %v", err)
-							return nil, false
-						} else {
-							return u, false
+
+						avatarLink := ctx.Req.Header.Get("X-Sandstorm-User-Picture")
+						if len(avatarLink) == 0 {
+                            avatarLink = "mailto:" + webAuthUser
+                        }
+
+						randomDigit := func() string {
+							return string(rune('0' + rand.Intn(10)))
 						}
+
+						for suffix := ""; len(suffix) < 5; suffix += randomDigit() {
+							u := &models.User{
+								SandstormId: webAuthUser,
+								SandstormAvatar: avatarLink,
+								Avatar: avatarLink,
+								Name:     handle + suffix,
+								Email:    gouuid.NewV4().String() + "@localhost",
+								Passwd:   gouuid.NewV4().String(),
+								IsActive: true,
+							}
+							if err = models.CreateUser(u); err != nil {
+								// FIXME: should I create a system notice?
+								log.Error(4, "CreateUser: %v", err)
+							} else {
+								return u, false
+							}
+						}
+						return nil, false
 					}
 				}
+ 
+                newAvatar := ctx.Req.Header.Get("X-Sandstorm-User-Picture")
+                if len(newAvatar) == 0 {
+                        newAvatar = "mailto:" + webAuthUser
+                }
+                if u.SandstormAvatar != newAvatar {
+                        u.SandstormAvatar = newAvatar
+                        models.UpdateUser(u)
+                }
 				return u, false
 			}
 		}

@@ -202,7 +202,11 @@ func AvatarLink(email string) (url string) {
 		url = setting.GravatarSource + HashEmail(email)
 	}
 	if len(url) == 0 {
-		url = setting.AppSubURL + "/img/avatar_default.png"
+       parts := strings.Split(email, "@")
+       if len(parts) == 2 && parts[1] == "localhost" {
+           return "mailto:" + parts[0]
+       }
+       return "mailto:" + email
 	}
 	return url
 }

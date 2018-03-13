@@ -4,6 +4,12 @@
 	<div class="ui container">
 		<div class="ui grid">
 			<div class="ten wide column">
+				{{if eq .RepoCount 0}}
+					<div class="news clear">
+						<span class="text-bold">You don't have any repositories. Use this button to create one:</span>
+						<a class="ui label blue" type="button" href="/repo/create"><i class="icon plus"></i>New Repository</a>
+					</div>
+				{{end}}
 				{{template "user/dashboard/feeds" .}}
 				{{if .AfterID}}
 					<button class="ui fluid basic button center ajax-load-button" data-url="{{.Link}}?after_id={{.AfterID}}">More</button>
@@ -15,7 +21,7 @@
 					{{if not .ContextUser.IsOrganization}}
 						<a class="item" data-tab="orgs">{{.i18n.Tr "organization"}}</a>
 					{{end}}
-					<a class="item" data-tab="mirrors">{{.i18n.Tr "mirror"}}</a>
+					<!--<a class="item" data-tab="mirrors">{{.i18n.Tr "mirror"}}</a>-->
 				</div>
 				<div class="ui tab active list" data-tab="repos">
 					<div class="ui top attached header">
@@ -101,7 +107,7 @@
 					</div>
 				{{end}}
 
-				<div class="ui tab list" data-tab="mirrors">
+				<!--div class="ui tab list" data-tab="mirrors">
 					<div class="ui top attached header">
 						{{.i18n.Tr "home.my_mirrors"}} <span class="ui grey label">{{.MirrorCount}}</span>
 						<div class="ui right">
@@ -126,7 +132,7 @@
 							{{end}}
 						</ul>
 					</div>
-				</div>
+				</div-->
 			</div>
 		</div>
 	</div>

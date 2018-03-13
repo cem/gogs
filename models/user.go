@@ -45,6 +45,8 @@ const (
 // User represents the object of individual and member of organization.
 type User struct {
 	ID        int64
+	SandstormId     string `xorm:"CHAR(32) UNIQUE NOT NULL"`
+    SandstormAvatar string `xorm:"NOT NULL"`
 	LowerName string `xorm:"UNIQUE NOT NULL"`
 	Name      string `xorm:"UNIQUE NOT NULL"`
 	FullName  string
@@ -246,6 +248,9 @@ func (u *User) RelAvatarLink() string {
 	if u.ID == -1 {
 		return defaultImgUrl
 	}
+    if u.SandstormAvatar != "" {
+        return u.SandstormAvatar
+    }
 
 	switch {
 	case u.UseCustomAvatar:
@@ -267,11 +272,14 @@ func (u *User) RelAvatarLink() string {
 
 // AvatarLink returns user avatar absolute link.
 func (u *User) AvatarLink() string {
-	link := u.RelAvatarLink()
-	if link[0] == '/' && link[1] != '/' {
-		return setting.AppURL + strings.TrimPrefix(link, setting.AppSubURL)[1:]
-	}
-	return link
+    if u.SandstormAvatar != "" {
+        return u.SandstormAvatar
+    }
+    link := u.RelAvatarLink()
+    if link[0] == '/' && link[1] != '/' {
+        return setting.AppSubURL + link
+    }
+    return link
 }
 
 // User.GetFollwoers returns range of user's followers.
@@ -919,6 +927,22 @@ func GetAssigneeByID(repo *Repository, userID int64) (*User, error) {
 	}
 	return GetUserByID(userID)
 }
+
+func getUserBySandstormID(e Engine, id string) (*User, error) {
+       u := &User{SandstormId: id}
+       has, err := e.Get(u)
+       if err != nil {
+               return nil, err
+       } else if !has {
+               return nil, ErrSandstormUserNotExist{id, ""}
+       }
+       return u, nil
+}
+
+func GetUserBySandstormID(id string) (*User, error) {
+       return getUserBySandstormID(x, id)
+}
+
 
 // GetUserByName returns a user by given name.
 func GetUserByName(name string) (*User, error) {

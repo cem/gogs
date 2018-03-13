@@ -93,6 +93,21 @@ func (err ErrUserHasOrgs) Error() string {
 	return fmt.Sprintf("user still has membership of organizations [uid: %d]", err.UID)
 }
 
+type ErrSandstormUserNotExist struct {
+       UID  string
+       Name string
+}
+
+func IsErrSandstormUserNotExist(err error) bool {
+       _, ok := err.(ErrSandstormUserNotExist)
+       return ok
+}
+
+func (err ErrSandstormUserNotExist) Error() string {
+       return fmt.Sprintf("user does not exist: [uid: %s, name: %s]", err.UID, err.Name)
+}
+
+
 //  __      __.__ __   .__
 // /  \    /  \__|  | _|__|
 // \   \/\/   /  |  |/ /  |

@@ -32,6 +32,7 @@ func CreatePost(c *context.Context, f form.CreateOrg) {
 
 	org := &models.User{
 		Name:     f.OrgName,
+		SandstormId:     f.OrgName,
 		IsActive: true,
 		Type:     models.USER_TYPE_ORGANIZATION,
 	}

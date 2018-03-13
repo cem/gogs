@@ -1239,7 +1239,7 @@ footer .ui.language .menu {
 .repository #clone-panel {
   margin-top: -8px;
   margin-left: 5px;
-  width: 350px;
+  width: 134px;
 }
 .repository #clone-panel input {
   border-radius: 0;
@@ -3207,4 +3207,10 @@ footer .ui.language .menu {
 }
 .ui.user.list .item .description a:hover {
   text-decoration: underline;
+}
+.ui.mini.image {
+  height: 18px;
+}
+.ui.small.image {
+  height: 25px;
 }

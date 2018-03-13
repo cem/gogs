@@ -94,6 +94,19 @@ func HTTPContexter() macaron.Handler {
 			return
 		}
 
+		// sandstorm login
+		authSandstormId := c.Req.Header.Get("X-Sandstorm-User-Id")
+        if authSandstormId == "" {
+			askCredentials(c, http.StatusUnauthorized, "")
+			return
+        }
+        authUser, err := models.GetUserBySandstormID(authSandstormId)
+        if authUser == nil || err != nil {
+        	c.Handle(http.StatusInternalServerError, "SandstormSignIn", err)
+        	return
+        }
+
+		/*
 		// Handle HTTP Basic Authentication
 		authHead := c.Req.Header.Get("Authorization")
 		if len(authHead) == 0 {
@@ -143,6 +156,7 @@ func HTTPContexter() macaron.Handler {
 Please create and use personal access token on user settings page`)
 			return
 		}
+		*/
 
 		log.Trace("HTTPGit - Authenticated user: %s", authUser.Name)
 

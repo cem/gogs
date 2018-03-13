@@ -113,9 +113,11 @@
 												<a class="item" href="{{AppSubURL}}/repo/create">
 													<i class="octicon octicon-plus"></i> {{.i18n.Tr "new_repo"}}
 												</a>
+												<!--No migrations. Sandstorm doesn't allow accessing other servers.
 												<a class="item" href="{{AppSubURL}}/repo/migrate">
 													<i class="octicon octicon-repo-clone"></i> {{.i18n.Tr "new_migrate"}}
 												</a>
+												-->
 												{{if .LoggedUser.CanCreateOrganization}}
 												<a class="item" href="{{AppSubURL}}/org/create">
 													<i class="octicon octicon-organization"></i> {{.i18n.Tr "new_org"}}
@@ -169,7 +171,7 @@
 								{{else}}
 
 									<a class="item" target="_blank" href="https://gogs.io/docs" rel="noreferrer">{{.i18n.Tr "help"}}</a>
-									<div class="right menu">
+									<!--<div class="right menu">
 										{{if .ShowRegistrationButton}}
 											<a class="item{{if .PageIsSignUp}} active{{end}}" href="{{AppSubURL}}/user/sign_up">
 												<i class="octicon octicon-person"></i> {{.i18n.Tr "register"}}
@@ -178,7 +180,7 @@
 										<a class="item{{if .PageIsSignIn}} active{{end}}" href="{{AppSubURL}}/user/login?redirect_to={{.Link}}">
 											<i class="octicon octicon-sign-in"></i> {{.i18n.Tr "sign_in"}}
 										</a>
-									</div><!-- end anonymous right menu -->
+									</div>--><!-- end anonymous right menu -->
 
 								{{end}}
 							</div><!-- end top menu -->
